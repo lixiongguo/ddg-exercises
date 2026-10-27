@@ -1,8 +1,11 @@
-// QuadCover principal curvature field, before smoothing. Models can be switched live.
+// Principal curvature field from geometry-central's dihedral-angle curvature tensor.
 
-#include "Mesh.h"
 #include "QuadCover.h"
 #include "models.h"
+
+#include "geometrycentral/surface/direction_fields.h"
+#include "geometrycentral/surface/meshio.h"
+#include "geometrycentral/surface/vertex_position_geometry.h"
 
 #include "polyscope/curve_network.h"
 #include "polyscope/point_cloud.h"
@@ -18,6 +21,7 @@
 #include <cmath>
 #include <cstdint>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -27,8 +31,10 @@ void showSelected() {}
 
 std::vector<ModelFile> gModels;
 int gModel = 0;
+float gDensity = 20.f;
+bool gReady = false;
 std::string gStatus;
-std::string gCaption = "橙色流线顺着主曲率走，蓝色流线顺着正交方向走。红点是正奇异点，蓝点是负奇异点。";
+std::string gCaption = "曲率对齐的光滑十字场。橙色和蓝色是两族互相垂直的流线，圆点是奇异点。";
 
 glm::vec3 at(const Eigen::MatrixXd& points, int row) {
     return glm::vec3(points(row, 0), points(row, 1), points(row, 2));
@@ -62,6 +68,9 @@ struct FieldPicture {
     int negative = 0;
 };
 
+QuadCover::PrincipalField gField;
+FieldPicture gSingularities;
+
 struct Cell {
     int x = 0;
     int y = 0;
@@ -76,7 +85,7 @@ struct CellHash {
     }
 };
 
-FieldPicture buildPicture(const QuadCover::PrincipalField& field) {
+FieldPicture buildPicture(const QuadCover::PrincipalField& field, float spacingEdges) {
     FieldPicture picture;
     const int nFaces = static_cast<int>(field.directions.rows());
     const int nVerts = static_cast<int>(field.positions.rows());
@@ -136,7 +145,7 @@ FieldPicture buildPicture(const QuadCover::PrincipalField& field) {
         }
     }
     const double meanEdge = edgeCount > 0 ? edgeSum / edgeCount : 0.02;
-    const double spacing = std::max(meanEdge * 5.0, 1e-6);
+    const double spacing = std::max(meanEdge * static_cast<double>(spacingEdges), 1e-6);
 
     auto otherFace = [&](int face, int a, int b) {
         const auto found = neighbors.find(edgeKey(a, b));
@@ -163,7 +172,7 @@ FieldPicture buildPicture(const QuadCover::PrincipalField& field) {
         int face = startFace;
         Eigen::Vector3d point = start;
         seen[startFace] = 1;
-        for (int step = 0; step < 160; ++step) {
+        for (int step = 0; step < 420; ++step) {
             const auto& tri = triangles[face];
             const Eigen::Vector3d& p0 = position[tri[0]];
             const Eigen::Vector3d& p1 = position[tri[1]];
@@ -211,7 +220,7 @@ FieldPicture buildPicture(const QuadCover::PrincipalField& field) {
             if (incoming.norm() < 1e-8) break;
             incoming.normalize();
             Eigen::Vector3d fieldDir = useMinor ? minor[next] : direction[next];
-            if (std::abs(fieldDir.dot(incoming)) < 0.5) break;
+            if (std::abs(fieldDir.dot(incoming)) < 0.08) break;
             if (fieldDir.dot(incoming) < 0) fieldDir = -fieldDir;
             const Eigen::Vector3d center = (position[triangles[next][0]] + position[triangles[next][1]] + position[triangles[next][2]]) / 3.0;
             const Eigen::Vector3d inside = edgePoint * 0.98 + center * 0.02;
@@ -240,10 +249,10 @@ FieldPicture buildPicture(const QuadCover::PrincipalField& field) {
             for (auto it = backward.rbegin(); it != backward.rend(); ++it) curve.push_back(*it);
             curve.push_back(center);
             curve.insert(curve.end(), forward.begin(), forward.end());
-            if (curve.size() < 4) continue;
+            if (curve.size() < 3) continue;
             double length = 0;
             for (size_t i = 1; i < curve.size(); ++i) length += (curve[i] - curve[i - 1]).norm();
-            if (length < meanEdge * 3.0) continue;
+            if (length < meanEdge) continue;
             const size_t base = nodes.size();
             for (const Eigen::Vector3d& point : curve) {
                 nodes.push_back(toGlm(point));
@@ -379,68 +388,147 @@ void drawField(polyscope::SurfaceMesh* mesh, const FieldPicture& picture) {
     }
     if (!picture.majorEdges.empty()) {
         polyscope::CurveNetwork* major = polyscope::registerCurveNetwork("主曲率流线", picture.majorNodes, picture.majorEdges);
-        major->setColor({0.91f, 0.49f, 0.05f});
-        major->setRadius(0.0022f, true);
+        major->setColor({0.72f, 0.34f, 0.05f});
+        major->setMaterial("flat");
+        major->setRadius(0.00018f, true);
         major->setEnabled(true);
     }
     if (!picture.minorEdges.empty()) {
         polyscope::CurveNetwork* minor = polyscope::registerCurveNetwork("正交流线", picture.minorNodes, picture.minorEdges);
-        minor->setColor({0.35f, 0.75f, 1.0f});
-        minor->setRadius(0.0018f, true);
+        minor->setColor({0.12f, 0.42f, 0.68f});
+        minor->setMaterial("flat");
+        minor->setRadius(0.00015f, true);
         minor->setEnabled(true);
     }
     if (!picture.singularPoints.empty()) {
         polyscope::PointCloud* points = polyscope::registerPointCloud("奇异点", picture.singularPoints);
-        points->setPointRadius(0.0065f, true);
+        points->setMaterial("flat");
+        points->setPointRadius(0.0026f, true);
         points->addColorQuantity("指标", picture.singularColors)->setEnabled(true);
     }
 }
 
-bool showModel(int index) {
-    if (index < 0 || index >= static_cast<int>(gModels.size())) return false;
-    Mesh mesh;
-    if (!mesh.read(gModels[index].path.string())) {
-        gStatus = "无法读取 " + gModels[index].label;
+bool loadPrincipalField(const std::string& path, QuadCover::PrincipalField& field, FieldPicture& singularities,
+                        std::string& error) {
+    namespace gc = geometrycentral;
+    namespace surface = geometrycentral::surface;
+    try {
+        std::unique_ptr<surface::ManifoldSurfaceMesh> mesh;
+        std::unique_ptr<surface::VertexPositionGeometry> geometry;
+        std::tie(mesh, geometry) = surface::readManifoldSurfaceMesh(path);
+        geometry->requireFaceTangentBasis();
+        geometry->requireFaceNormals();
+        geometry->requireVertexNormals();
+        const surface::FaceData<gc::Vector2> aligned = surface::computeCurvatureAlignedFaceDirectionField(*geometry, 4);
+        const int nVerts = static_cast<int>(mesh->nVertices());
+        const int nFaces = static_cast<int>(mesh->nFaces());
+        field.positions.resize(nVerts, 3);
+        field.triangles.resize(nFaces * 3);
+        field.directions.resize(nFaces, 3);
+        field.normals.resize(nFaces, 3);
+        for (surface::Vertex vertex : mesh->vertices()) {
+            const gc::Vector3 position = geometry->inputVertexPositions[vertex];
+            field.positions.row(vertex.getIndex()) << position.x, position.y, position.z;
+        }
+        for (surface::Face face : mesh->faces()) {
+            const int index = face.getIndex();
+            int corner = 0;
+            for (surface::Vertex vertex : face.adjacentVertices()) {
+                field.triangles[index * 3 + corner] = static_cast<int>(vertex.getIndex());
+                ++corner;
+            }
+            const gc::Vector2 tensor = aligned[face];
+            const double theta = std::atan2(tensor.y, tensor.x) * 0.25;
+            const gc::Vector3 basisX = geometry->faceTangentBasis[face][0];
+            const gc::Vector3 basisY = geometry->faceTangentBasis[face][1];
+            gc::Vector3 direction = basisX * std::cos(theta) + basisY * std::sin(theta);
+            const double length = direction.norm();
+            if (length > 1e-12) direction = direction * (1.0 / length);
+            field.directions.row(index) << direction.x, direction.y, direction.z;
+            const gc::Vector3 normal = geometry->faceNormals[face];
+            field.normals.row(index) << normal.x, normal.y, normal.z;
+        }
+        const surface::VertexData<int> index = surface::computeVertexIndex(*geometry, aligned, 4);
+        double edgeSum = 0;
+        int edgeCount = 0;
+        for (surface::Edge edge : mesh->edges()) {
+            edgeSum += geometry->edgeLength(edge);
+            ++edgeCount;
+        }
+        const double lift = (edgeCount > 0 ? edgeSum / edgeCount : 0.01) * 0.12;
+        singularities = {};
+        for (surface::Vertex vertex : mesh->vertices()) {
+            if (vertex.isBoundary() || index[vertex] == 0) continue;
+            gc::Vector3 point = geometry->inputVertexPositions[vertex] + geometry->vertexNormals[vertex] * lift;
+            singularities.singularPoints.push_back(glm::vec3(point.x, point.y, point.z));
+            if (index[vertex] > 0) {
+                singularities.singularColors.push_back(glm::vec3(0.95f, 0.22f, 0.12f));
+                ++singularities.positive;
+            } else {
+                singularities.singularColors.push_back(glm::vec3(0.16f, 0.45f, 0.98f));
+                ++singularities.negative;
+            }
+        }
+        return nFaces > 0;
+    } catch (const std::exception& exception) {
+        error = exception.what();
         return false;
     }
-    QuadCover cover(mesh);
-    cover.pipelineReset();
-    for (int stage = 0; stage <= 2; ++stage) {
-        if (cover.pipelineRunStage(stage) != 0) {
-            gStatus = std::string(cover.pipelineStageName(stage)) + " 失败";
-            return false;
-        }
-    }
-    QuadCover::PrincipalField field = cover.principalField();
-    const int nFaces = static_cast<int>(field.directions.rows());
-    std::vector<glm::vec3> positions(field.positions.rows());
+}
+
+float spacingEdgesForDensity(float density) {
+    return std::max(0.22f, 10.f / std::max(density, 0.5f));
+}
+
+void present(bool resetCamera) {
+    if (!gReady) return;
+    const int nFaces = static_cast<int>(gField.directions.rows());
+    std::vector<glm::vec3> positions(gField.positions.rows());
     std::vector<std::array<size_t, 3>> triangles(nFaces);
-    for (int i = 0; i < field.positions.rows(); ++i) positions[i] = at(field.positions, i);
+    for (int i = 0; i < gField.positions.rows(); ++i) positions[i] = at(gField.positions, i);
     for (int face = 0; face < nFaces; ++face) {
         triangles[face] = {
-            static_cast<size_t>(field.triangles[face * 3]),
-            static_cast<size_t>(field.triangles[face * 3 + 1]),
-            static_cast<size_t>(field.triangles[face * 3 + 2]),
+            static_cast<size_t>(gField.triangles[face * 3]),
+            static_cast<size_t>(gField.triangles[face * 3 + 1]),
+            static_cast<size_t>(gField.triangles[face * 3 + 2]),
         };
     }
-
-    const FieldPicture picture = buildPicture(field);
+    FieldPicture picture = buildPicture(gField, spacingEdgesForDensity(gDensity));
+    picture.singularPoints = gSingularities.singularPoints;
+    picture.singularColors = gSingularities.singularColors;
+    picture.positive = gSingularities.positive;
+    picture.negative = gSingularities.negative;
     polyscope::removeAllStructures();
-    polyscope::SurfaceMesh* psMesh = polyscope::registerSurfaceMesh(gModels[index].label, positions, triangles);
+    polyscope::SurfaceMesh* psMesh = polyscope::registerSurfaceMesh(gModels[gModel].label, positions, triangles);
     psMesh->setSmoothShade(true);
     psMesh->setSurfaceColor({0.78, 0.78, 0.78});
     drawField(psMesh, picture);
-    polyscope::view::resetCameraToHomeView();
-    gModel = index;
-    gStatus = gModels[index].label + "    " + std::to_string(nFaces) + " 面    流线 " +
+    if (resetCamera) polyscope::view::resetCameraToHomeView();
+    gStatus = gModels[gModel].label + "    " + std::to_string(nFaces) + " 面    流线 " +
               std::to_string(picture.majorCurves) + " / " + std::to_string(picture.minorCurves) + "    奇异点 +" +
               std::to_string(picture.positive) + " −" + std::to_string(picture.negative);
+}
+
+bool showModel(int index) {
+    if (index < 0 || index >= static_cast<int>(gModels.size())) return false;
+    QuadCover::PrincipalField field;
+    FieldPicture singularities;
+    std::string error;
+    if (!loadPrincipalField(gModels[index].path.string(), field, singularities, error)) {
+        gStatus = "无法读取 " + gModels[index].label + (error.empty() ? "" : "  " + error);
+        return false;
+    }
+    gField = std::move(field);
+    gSingularities = std::move(singularities);
+    gModel = index;
+    gReady = true;
+    present(true);
     return true;
 }
 
 void callback() {
-    ImGui::Text("QuadCover 主曲率场");
-    ImGui::Text("光滑之前的中间结果");
+    ImGui::Text("主曲率场");
+    ImGui::Text("曲率对齐的光滑十字场");
     if (gModels.empty()) {
         ImGui::Text("没有找到 obj 模型");
         return;
@@ -454,12 +542,13 @@ void callback() {
         ImGui::EndCombo();
     }
     if (requested >= 0 && requested != gModel) showModel(requested);
+    if (ImGui::SliderFloat("流线密度", &gDensity, 1.f, 40.f, "%.1f")) present(false);
     if (!gStatus.empty()) ImGui::TextWrapped("%s", gStatus.c_str());
     ImGui::TextWrapped("%s", gCaption.c_str());
 }
 
 int main(int argc, char** argv) {
-    args::ArgumentParser parser("QuadCover 主曲率场");
+    args::ArgumentParser parser("主曲率场");
     args::Positional<std::string> inputFilename(parser, "mesh", "启动时打开的网格，默认识别 bunny.obj");
     try {
         parser.ParseCLI(argc, argv);
@@ -492,7 +581,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    polyscope::options::programName = "QuadCover 主曲率场";
+    polyscope::options::programName = "主曲率场";
     polyscope::init();
     polyscope::state::userCallback = callback;
     if (!showModel(gModel)) return 1;
