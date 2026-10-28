@@ -68,6 +68,8 @@ function(link_viewer target)
     "${PARAM_ROOT}/Parameterization"
     "${PARAM_ROOT}/Parameterization/GlobalFieldsParam"
     "${PARAM_ROOT}/VectorFileds/PrincipalCurvatureFields"
+    "${PARAM_ROOT}/VectorFileds"
+    "${PARAM_ROOT}/VectorFileds/ComplexPolyField"
     "${PARAM_ROOT}/Solvers"
     "${PARAM_ROOT}/QuadMeshing"
     "/opt/homebrew/include/eigen3"
@@ -75,7 +77,15 @@ function(link_viewer target)
   target_link_libraries(${target} geometry-central polyscope)
 endfunction()
 
-add_executable(main src/main.cpp src/models.cpp ${MESH_SOURCES})
+add_executable(main
+  src/main.cpp
+  src/models.cpp
+  ${MESH_SOURCES}
+  "${PARAM_ROOT}/VectorFileds/NRosyVectorFields.cpp"
+  "${PARAM_ROOT}/VectorFileds/ComplexPolyField/ComplexPolyField.cpp"
+  "${PARAM_ROOT}/Parameterization/GlobalFieldsParam/MIQQuad.cpp"
+  "${PARAM_ROOT}/Solvers/MixedIntegerProgram.cpp"
+)
 link_viewer(main)
 
 add_executable(quad_test
@@ -124,3 +134,46 @@ target_include_directories(simple_param PRIVATE
 )
 target_compile_options(simple_param PRIVATE "-fobjc-arc" "-std=c++17")
 target_link_libraries(simple_param glfw "-framework OpenGL" "-framework Cocoa" "-framework CoreText")
+
+set(OSQP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../deps/osqp")
+set(UNITTESTS OFF CACHE BOOL "OSQP unit tests" FORCE)
+set(ENABLE_MKL_PARDISO OFF CACHE BOOL "OSQP MKL Pardiso" FORCE)
+add_subdirectory(${OSQP_ROOT} deps/osqp)
+
+add_executable(cone_unwrap
+  ../cone-unwrap/src/main.mm
+  src/models.cpp
+  "${PARAM_ROOT}/Parameterization/Parameterization.cpp"
+  "${PARAM_ROOT}/Parameterization/ConeParam/ConeParameterization.cpp"
+  "${PARAM_ROOT}/Parameterization/ConeParam/Conformal/CirclePatterns.cpp"
+  "${PARAM_ROOT}/Parameterization/ConeParam/Conformal/Cetm.cpp"
+  "${PARAM_ROOT}/Parameterization/ConeParam/RicciFlow/RicciFlow.cpp"
+  "${PARAM_ROOT}/Parameterization/ConeParam/IncrementalFlattenning/IncrementalFlattening.cpp"
+  "${PARAM_ROOT}/Parameterization/SimpleParam/ARAP/Tutte.cpp"
+  "${PARAM_ROOT}/Solvers/Solver.cpp"
+  "${PARAM_ROOT}/BaseMesh/Mesh.cpp"
+  "${PARAM_ROOT}/BaseMesh/MeshIO.cpp"
+  "${PARAM_ROOT}/BaseMesh/Vertex.cpp"
+  "${PARAM_ROOT}/BaseMesh/Edge.cpp"
+  "${PARAM_ROOT}/BaseMesh/Face.cpp"
+  "${PARAM_ROOT}/BaseMesh/HalfEdge.cpp"
+  "${PARAM_ROOT}/BaseMesh/QcError.cpp"
+  "${PARAM_ROOT}/BaseMesh/GaussianCurvature.cpp"
+)
+target_include_directories(cone_unwrap PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/src"
+  "${PARAM_ROOT}/BaseMesh"
+  "${PARAM_ROOT}/Parameterization"
+  "${PARAM_ROOT}/Parameterization/ConeParam"
+  "${PARAM_ROOT}/Parameterization/ConeParam/Conformal"
+  "${PARAM_ROOT}/Parameterization/ConeParam/RicciFlow"
+  "${PARAM_ROOT}/Parameterization/ConeParam/IncrementalFlattenning"
+  "${PARAM_ROOT}/Parameterization/SimpleParam/ARAP"
+  "${PARAM_ROOT}/CutSeamMesh"
+  "${PARAM_ROOT}/Solvers"
+  "${PARAM_ROOT}/Solvers/Mosek"
+  "/opt/homebrew/include/eigen3"
+)
+target_compile_definitions(cone_unwrap PRIVATE CONE_USE_OSQP)
+set_source_files_properties(../cone-unwrap/src/main.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+target_link_libraries(cone_unwrap osqpstatic glfw "-framework OpenGL" "-framework Cocoa" "-framework CoreText")
