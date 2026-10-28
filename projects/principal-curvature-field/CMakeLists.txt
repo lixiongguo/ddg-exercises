@@ -177,3 +177,30 @@ target_include_directories(cone_unwrap PRIVATE
 target_compile_definitions(cone_unwrap PRIVATE CONE_USE_OSQP)
 set_source_files_properties(../cone-unwrap/src/main.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 target_link_libraries(cone_unwrap osqpstatic glfw "-framework OpenGL" "-framework Cocoa" "-framework CoreText")
+
+add_executable(hof_unwrap
+  ../hof-unwrap/src/main.mm
+  src/models.cpp
+  "${PARAM_ROOT}/Parameterization/Parameterization.cpp"
+  "${PARAM_ROOT}/Parameterization/CutSeamParam/CutSeamParameterization.cpp"
+  "${PARAM_ROOT}/Parameterization/CutSeamParam/HoloOneForm/HolomorphicOneForm.cpp"
+  "${PARAM_ROOT}/CutSeamMesh/CutSeamMesh.cpp"
+  "${PARAM_ROOT}/BaseMesh/Mesh.cpp"
+  "${PARAM_ROOT}/BaseMesh/MeshIO.cpp"
+  "${PARAM_ROOT}/BaseMesh/Vertex.cpp"
+  "${PARAM_ROOT}/BaseMesh/Edge.cpp"
+  "${PARAM_ROOT}/BaseMesh/Face.cpp"
+  "${PARAM_ROOT}/BaseMesh/HalfEdge.cpp"
+  "${PARAM_ROOT}/BaseMesh/QcError.cpp"
+)
+target_include_directories(hof_unwrap PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/src"
+  "${PARAM_ROOT}/BaseMesh"
+  "${PARAM_ROOT}/Parameterization"
+  "${PARAM_ROOT}/Parameterization/CutSeamParam"
+  "${PARAM_ROOT}/Parameterization/CutSeamParam/HoloOneForm"
+  "${PARAM_ROOT}/CutSeamMesh"
+  "/opt/homebrew/include/eigen3"
+)
+set_source_files_properties(../hof-unwrap/src/main.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+target_link_libraries(hof_unwrap glfw "-framework OpenGL" "-framework Cocoa" "-framework CoreText")
