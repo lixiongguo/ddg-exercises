@@ -82,6 +82,12 @@ std::vector<Button> gButtons;
 std::unordered_map<std::string, TextImage> gText;
 std::vector<DrawVertex> gTriangles, gUvTriangles, gFlipTris, gFlips3d, gConeMarks;
 float gStatusX = 12.f;
+bool gSolving = false;
+GLFWwindow* gWindow = nullptr;
+
+void drawFrame();
+void reportCircleProgress(int completed, int total);
+void reportIncrementalProgress(int phase, int completed, int total);
 
 GLuint gProgram = 0, gFlatProgram = 0, gVao = 0, gBuffer = 0;
 
@@ -480,12 +486,27 @@ void rebuildGeometry() {
 }
 
 void unfold() {
-    if (gMesh.vertices.empty()) return;
+    if (gMesh.vertices.empty() || gSolving) return;
+    gSolving = true;
     const auto started = std::chrono::steady_clock::now();
     std::string error;
     try {
         if (gMethod == Method::Incremental) {
             IncrementalFlattening solver(gMesh);
+            if (!gCones.empty()) {
+                std::vector<int> indices;
+                std::vector<double> angles;
+                indices.reserve(gCones.size());
+                angles.reserve(gCones.size());
+                for (const auto& cone : gCones) {
+                    indices.push_back(cone.first);
+                    angles.push_back(cone.second);
+                }
+                solver.setPrescribedCones(indices, angles);
+            }
+            solver.setProgressCallback(reportIncrementalProgress);
+            gStatus = "Incremental Flattening · 摊平 0/24";
+            reportIncrementalProgress(0, 0, 24);
             solver.parameterize();
             gCones.clear();
             const std::vector<int>& cones = solver.coneVertices();
@@ -505,6 +526,9 @@ void unfold() {
             }
             if (gMethod == Method::Circle) {
                 CirclePatterns solver(gMesh, gScheme);
+                solver.setProgressCallback(reportCircleProgress);
+                gStatus = "Circle Pattern · 角度二次规划 0/8000";
+                reportCircleProgress(0, 8000);
                 solver.setConeSingulars(indices, angles);
                 solver.parameterize();
             } else if (gMethod == Method::Cetm) {
@@ -528,7 +552,11 @@ void unfold() {
             maxV = std::max(maxV, vertex->uv.y());
         }
         gHasResult = placed > 2 && (maxU - minU) > 1e-6 && (maxV - minV) > 1e-6;
-        if (!gHasResult) error = "展开没有得到坐标。先放锥点，让目标角和与欧拉示性数一致后再试。";
+        if (!gHasResult) {
+            error = gCones.empty()
+                ? "展开没有得到坐标。先放锥点，让目标角和与欧拉示性数一致后再试。"
+                : "展开没有得到坐标。";
+        }
     } catch (const std::exception& exception) {
         error = exception.what();
         gHasResult = false;
@@ -540,6 +568,7 @@ void unfold() {
           std::to_string(gSeconds).substr(0, 5) + " 秒 · 翻转 " + std::to_string(gFlips) +
           " · 锥点 " + std::to_string(gCones.size())
         : error;
+    gSolving = false;
 }
 
 struct Panel {
@@ -675,6 +704,7 @@ void layoutButtons() {
 }
 
 void clickButton(int id) {
+    if (gSolving) return;
     if (id == 1) loadModel(gModel - 1);
     else if (id == 2) loadModel(gModel + 1);
     else if (id == 10) gMethod = Method::Circle;
@@ -886,6 +916,28 @@ void drawFrame() {
     drawLabel(gHasResult ? "UV" : "UV · 点展开", right.x + 10.f, right.y + 8.f, true);
 }
 
+void reportCircleProgress(int completed, int total) {
+    gStatus = "Circle Pattern · 角度二次规划 " + std::to_string(completed) + "/" + std::to_string(total);
+    if (!gWindow) return;
+    drawFrame();
+    glfwSwapBuffers(gWindow);
+    glfwPollEvents();
+}
+
+void reportIncrementalProgress(int phase, int completed, int total) {
+    const char* name = "计算";
+    if (phase == 0) name = "摊平";
+    else if (phase == 1) name = "曲率取整";
+    else if (phase == 2) name = "割缝";
+    else if (phase == 3) name = "交叉场";
+    else if (phase == 4) name = "ARAP";
+    gStatus = std::string("Incremental Flattening · ") + name + " " + std::to_string(completed) + "/" + std::to_string(total);
+    if (!gWindow) return;
+    drawFrame();
+    glfwSwapBuffers(gWindow);
+    glfwPollEvents();
+}
+
 void mouseButton(GLFWwindow*, int button, int action, int) {
     if (button != GLFW_MOUSE_BUTTON_LEFT) return;
     if (action == GLFW_RELEASE) { gDrag = false; return; }
@@ -945,6 +997,7 @@ int main() {
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
     GLFWwindow* window = glfwCreateWindow(gWidth, gHeight, "锥奇异点展开", nullptr, nullptr);
     if (!window) return 1;
+    gWindow = window;
     glfwMakeContextCurrent(window);
     glfwSetMouseButtonCallback(window, mouseButton);
     glfwSetCursorPosCallback(window, cursor);
@@ -965,6 +1018,7 @@ int main() {
         glfwPollEvents();
     }
     glfwDestroyWindow(window);
+    gWindow = nullptr;
     glfwTerminate();
     return 0;
 }
