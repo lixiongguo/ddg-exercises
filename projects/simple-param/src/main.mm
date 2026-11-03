@@ -133,6 +133,24 @@ void addDir(std::vector<std::filesystem::path>& dirs, const std::filesystem::pat
     if (std::find(dirs.begin(), dirs.end(), canonical) == dirs.end()) dirs.push_back(canonical);
 }
 
+void addNearby(std::vector<std::filesystem::path>& dirs, const std::filesystem::path& start) {
+    const char* suffixes[] = {"assets/Models", "assets/Model1"};
+    std::error_code error;
+    std::filesystem::path dir = std::filesystem::weakly_canonical(start, error);
+    if (error || dir.empty()) return;
+    for (int depth = 0; depth < 6 && !dir.empty(); ++depth) {
+        for (const char* suffix : suffixes) addDir(dirs, dir / suffix);
+        error.clear();
+        for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(dir, error)) {
+            if (error || !entry.is_directory()) continue;
+            for (const char* suffix : suffixes) addDir(dirs, entry.path() / suffix);
+        }
+        const std::filesystem::path parent = dir.parent_path();
+        if (parent.empty() || parent == dir) break;
+        dir = parent;
+    }
+}
+
 bool isTopologicalDisk(const Mesh& mesh) {
     const int boundaryLoops = static_cast<int>(mesh.boundaries.size());
     const int euler = static_cast<int>(mesh.vertices.size()) - static_cast<int>(mesh.edges.size()) +
@@ -159,6 +177,10 @@ std::vector<DiskModel> listDisks() {
         addDir(dirs, exe / "../../../../../../assets/Models");
         addDir(dirs, exe / "../../../../../../assets/Model1");
     }
+    std::error_code cwdError;
+    const std::filesystem::path cwd = std::filesystem::current_path(cwdError);
+    if (!cwdError) addNearby(dirs, cwd);
+    if (!exe.empty()) addNearby(dirs, exe);
 
     std::map<std::string, DiskModel> found;
     for (const std::filesystem::path& dir : dirs) {
