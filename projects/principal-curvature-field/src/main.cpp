@@ -1,10 +1,8 @@
 // Principal curvature field from geometry-central's dihedral-angle curvature tensor.
 
-#include "QuadCover.h"
 #include "models.h"
 
 #include "ComplexPolyField.h"
-#include "MIQQuad.h"
 #include "Mesh.h"
 #include "NRosyVectorFields.h"
 
@@ -23,7 +21,6 @@
 
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <iostream>
@@ -50,11 +47,15 @@ const FieldAlgo kAlgos[] = {
 std::vector<ModelFile> gModels;
 int gModel = 0;
 int gAlgo = 0;
-int gQuadMethod = 0;
 float gDensity = 20.f;
-bool gShowEdges = true;
+bool gShowEdges = false;
+bool gShowMajor = true;
+bool gShowMinor = true;
+bool gShowSingular = true;
+bool gShowArrows = false;
 bool gReady = false;
 polyscope::SurfaceMesh* gPsMesh = nullptr;
+polyscope::SurfaceFaceVectorQuantity* gArrowQuantity = nullptr;
 Mesh gSurface;
 std::string gStatus;
 std::string gCaption = kAlgos[0].caption;
@@ -91,7 +92,15 @@ struct FieldPicture {
     int negative = 0;
 };
 
-QuadCover::PrincipalField gField;
+// 面数据：顶点位置、三角形索引、每面主方向和法向。
+struct PrincipalField {
+    Eigen::MatrixXd positions;
+    Eigen::VectorXi triangles;
+    Eigen::MatrixXd directions;
+    Eigen::MatrixXd normals;
+};
+
+PrincipalField gField;
 FieldPicture gSingularities;
 
 struct Cell {
@@ -108,7 +117,7 @@ struct CellHash {
     }
 };
 
-FieldPicture buildPicture(const QuadCover::PrincipalField& field, float spacingEdges) {
+FieldPicture buildPicture(const PrincipalField& field, float spacingEdges) {
     FieldPicture picture;
     const int nFaces = static_cast<int>(field.directions.rows());
     const int nVerts = static_cast<int>(field.positions.rows());
@@ -407,27 +416,29 @@ FieldPicture buildPicture(const QuadCover::PrincipalField& field, float spacingE
 
 void drawField(polyscope::SurfaceMesh* mesh, const FieldPicture& picture) {
     if (picture.arrows.size() == mesh->nFaces()) {
-        mesh->addFaceVectorQuantity("主方向", picture.arrows)->setEnabled(false);
+        gArrowQuantity = mesh->addFaceVectorQuantity("主方向", picture.arrows);
+        gArrowQuantity->setEnabled(gShowArrows);
     }
     if (!picture.majorEdges.empty()) {
-        polyscope::CurveNetwork* major = polyscope::registerCurveNetwork("主曲率流线", picture.majorNodes, picture.majorEdges);
-        major->setColor({0.72f, 0.34f, 0.05f});
+        polyscope::CurveNetwork* major = polyscope::registerCurveNetwork("流线", picture.majorNodes, picture.majorEdges);
+        major->setColor({0.95f, 0.45f, 0.07f});
         major->setMaterial("flat");
-        major->setRadius(0.00018f, true);
-        major->setEnabled(true);
+        major->setRadius(0.00028f, true);
+        major->setEnabled(gShowMajor);
     }
     if (!picture.minorEdges.empty()) {
         polyscope::CurveNetwork* minor = polyscope::registerCurveNetwork("正交流线", picture.minorNodes, picture.minorEdges);
-        minor->setColor({0.12f, 0.42f, 0.68f});
+        minor->setColor({0.16f, 0.55f, 0.95f});
         minor->setMaterial("flat");
-        minor->setRadius(0.00015f, true);
-        minor->setEnabled(true);
+        minor->setRadius(0.00024f, true);
+        minor->setEnabled(gShowMinor);
     }
     if (!picture.singularPoints.empty()) {
         polyscope::PointCloud* points = polyscope::registerPointCloud("奇异点", picture.singularPoints);
         points->setMaterial("flat");
-        points->setPointRadius(0.0026f, true);
+        points->setPointRadius(0.0034f, true);
         points->addColorQuantity("指标", picture.singularColors)->setEnabled(true);
+        points->setEnabled(gShowSingular);
     }
 }
 
@@ -472,7 +483,7 @@ void paintMeshSingularities(const Mesh& mesh, const std::vector<int>& index, Fie
     paintSingularities(points, normals, boundary, index, meanEdgeLength(mesh) * 0.12, singularities);
 }
 
-bool exportInterior(const Mesh& mesh, QuadCover::PrincipalField& field, std::string& error) {
+bool exportInterior(const Mesh& mesh, PrincipalField& field, std::string& error) {
     const int nVerts = static_cast<int>(mesh.vertices.size());
     int nFaces = 0;
     for (FaceCIter face = mesh.faces.begin(); face != mesh.faces.end(); ++face) {
@@ -505,7 +516,7 @@ bool exportInterior(const Mesh& mesh, QuadCover::PrincipalField& field, std::str
     return true;
 }
 
-bool singularitiesFromDirections(const QuadCover::PrincipalField& field, FieldPicture& singularities, std::string& error) {
+bool singularitiesFromDirections(const PrincipalField& field, FieldPicture& singularities, std::string& error) {
     namespace gc = geometrycentral;
     namespace surface = geometrycentral::surface;
     const int nFaces = static_cast<int>(field.directions.rows());
@@ -554,7 +565,7 @@ bool singularitiesFromDirections(const QuadCover::PrincipalField& field, FieldPi
     return true;
 }
 
-bool computeAligned(QuadCover::PrincipalField& field, FieldPicture& singularities, std::string& error) {
+bool computeAligned(PrincipalField& field, FieldPicture& singularities, std::string& error) {
     namespace gc = geometrycentral;
     namespace surface = geometrycentral::surface;
     const int nFaces = static_cast<int>(field.directions.rows());
@@ -583,7 +594,7 @@ bool computeAligned(QuadCover::PrincipalField& field, FieldPicture& singularitie
     return singularitiesFromDirections(field, singularities, error);
 }
 
-bool computePrincipal(QuadCover::PrincipalField& field, FieldPicture& singularities, std::string& error) {
+bool computePrincipal(PrincipalField& field, FieldPicture& singularities, std::string& error) {
     NRosyVectorFields rosy(gSurface, 4);
     if (!rosy.computeFromCurvature()) {
         error = "主曲率方向计算失败";
@@ -597,7 +608,7 @@ bool computePrincipal(QuadCover::PrincipalField& field, FieldPicture& singularit
     return singularitiesFromDirections(field, singularities, error);
 }
 
-bool computeTrivial(QuadCover::PrincipalField& field, FieldPicture& singularities, std::string& error) {
+bool computeTrivial(PrincipalField& field, FieldPicture& singularities, std::string& error) {
     NRosyVectorFields rosy(gSurface, 4);
     rosy.autoSingularities();
     std::vector<int> prescribed(static_cast<size_t>(rosy.numVertices()));
@@ -615,7 +626,7 @@ bool computeTrivial(QuadCover::PrincipalField& field, FieldPicture& singularitie
     return true;
 }
 
-bool computePoly(QuadCover::PrincipalField& field, FieldPicture& singularities, std::string& error) {
+bool computePoly(PrincipalField& field, FieldPicture& singularities, std::string& error) {
     ComplexPolyField poly(gSurface, 4);
     poly.compute();
     if (poly.numFaces() != field.directions.rows()) {
@@ -627,7 +638,7 @@ bool computePoly(QuadCover::PrincipalField& field, FieldPicture& singularities, 
 }
 
 bool computeSelected(int algo, std::string& error) {
-    QuadCover::PrincipalField field;
+    PrincipalField field;
     FieldPicture singularities;
     try {
         if (!exportInterior(gSurface, field, error)) return false;
@@ -671,10 +682,11 @@ void present(bool resetCamera) {
     picture.positive = gSingularities.positive;
     picture.negative = gSingularities.negative;
     polyscope::removeAllStructures();
+    gArrowQuantity = nullptr;
     gPsMesh = polyscope::registerSurfaceMesh(gModels[gModel].label, positions, triangles);
     gPsMesh->setSmoothShade(true);
-    gPsMesh->setSurfaceColor({0.78, 0.78, 0.78});
-    gPsMesh->setEdgeColor({0.15, 0.15, 0.15});
+    gPsMesh->setSurfaceColor({0.34, 0.36, 0.40});
+    gPsMesh->setEdgeColor({0.55, 0.58, 0.62});
     gPsMesh->setEdgeWidth(gShowEdges ? 1.0 : 0.0);
     drawField(gPsMesh, picture);
     if (resetCamera) polyscope::view::resetCameraToHomeView();
@@ -700,130 +712,12 @@ bool showModel(int index) {
     return true;
 }
 
-void addIntegerSegment(const Eigen::Vector2d corners[3], const Eigen::Vector3d positions[3], const Eigen::Vector3d& lift,
-                      std::vector<glm::vec3>& nodes, std::vector<std::array<size_t, 2>>& edges) {
-    const int cornerOf[3][2] = {{0, 1}, {1, 2}, {2, 0}};
-    for (int axis = 0; axis < 2; ++axis) {
-        const double value[3] = {corners[0][axis], corners[1][axis], corners[2][axis]};
-        if (!std::isfinite(value[0]) || !std::isfinite(value[1]) || !std::isfinite(value[2])) return;
-        const double lo = std::min(value[0], std::min(value[1], value[2]));
-        const double hi = std::max(value[0], std::max(value[1], value[2]));
-        const int first = static_cast<int>(std::floor(lo)) + 1;
-        const int last = static_cast<int>(std::ceil(hi)) - 1;
-        if (last - first > 24) continue;
-        for (int level = first; level <= last; ++level) {
-            Eigen::Vector3d hit[2];
-            int count = 0;
-            for (int edge = 0; edge < 3 && count < 2; ++edge) {
-                const int a = cornerOf[edge][0];
-                const int b = cornerOf[edge][1];
-                const double va = value[a];
-                const double vb = value[b];
-                if ((va - level) * (vb - level) > 0.0) continue;
-                if (std::abs(vb - va) < 1e-14) continue;
-                const double t = (level - va) / (vb - va);
-                if (t < -1e-6 || t > 1.0 + 1e-6) continue;
-                hit[count++] = positions[a] * (1.0 - t) + positions[b] * t;
-            }
-            if (count == 2 && (hit[1] - hit[0]).norm() > 1e-8) {
-                const size_t base = nodes.size();
-                nodes.push_back(toGlm(hit[0] + lift));
-                nodes.push_back(toGlm(hit[1] + lift));
-                edges.push_back({base, base + 1});
-            }
-        }
-    }
-}
-
-void drawQuadMesh(const std::vector<std::array<Eigen::Vector2d, 3>>& charts) {
-    const int nFaces = static_cast<int>(gField.directions.rows());
-    if (static_cast<int>(charts.size()) != nFaces) return;
-    double edgeSum = 0;
-    int edgeCount = 0;
-    std::vector<glm::vec3> nodes;
-    std::vector<std::array<size_t, 2>> edges;
-    for (int face = 0; face < nFaces; ++face) {
-        Eigen::Vector3d position[3];
-        for (int corner = 0; corner < 3; ++corner) {
-            position[corner] = gField.positions.row(gField.triangles[face * 3 + corner]);
-        }
-        edgeSum += (position[1] - position[0]).norm();
-        ++edgeCount;
-        Eigen::Vector3d normal = gField.normals.row(face);
-        if (normal.norm() > 1e-8) normal.normalize();
-        const Eigen::Vector2d chart[3] = {charts[face][0], charts[face][1], charts[face][2]};
-        addIntegerSegment(chart, position, normal * (edgeCount > 0 ? edgeSum / edgeCount : 0.01) * 0.04, nodes, edges);
-    }
-    polyscope::removeStructure("四边形网格", false);
-    if (edges.empty()) {
-        gStatus = std::string(gQuadMethod == 0 ? "MIQ" : "QuadCover") + " 没有诱导出四边形边";
-        return;
-    }
-    polyscope::CurveNetwork* network = polyscope::registerCurveNetwork("四边形网格", nodes, edges);
-    network->setColor({0.08f, 0.38f, 0.24f});
-    network->setMaterial("flat");
-    network->setRadius(0.00022f, true);
-    network->setEnabled(true);
-    gStatus = std::string(gQuadMethod == 0 ? "MIQ" : "QuadCover") + "    四边形边 " + std::to_string(edges.size());
-}
-
-void quadrangulate() {
-    if (!gReady || gField.directions.rows() <= 0) return;
-    const auto started = std::chrono::steady_clock::now();
-    std::vector<std::array<Eigen::Vector2d, 3>> charts;
-    try {
-        const int nFaces = static_cast<int>(gField.directions.rows());
-        if (gQuadMethod == 0) {
-            MIQQuad miq(gSurface);
-            miq.setCrossField(gField.directions);
-            miq.parameterize();
-            const Eigen::MatrixXd& corner = miq.cornerUV();
-            if (corner.rows() != nFaces || corner.cols() < 6) {
-                gStatus = "MIQ 没有得到参数坐标";
-                return;
-            }
-            charts.resize(nFaces);
-            for (int face = 0; face < nFaces; ++face) {
-                for (int cornerIndex = 0; cornerIndex < 3; ++cornerIndex) {
-                    charts[face][cornerIndex] = Eigen::Vector2d(corner(face, cornerIndex * 2), corner(face, cornerIndex * 2 + 1));
-                }
-            }
-        } else {
-            QuadCover cover(gSurface);
-            cover.setCrossField(gField.directions);
-            cover.setSmoothIterations(0);
-            if (!cover.parameterizeFull()) {
-                gStatus = "QuadCover 参数化失败";
-                return;
-            }
-            const Eigen::MatrixXd& chart = cover.chartUV();
-            if (chart.rows() < gField.positions.rows() || chart.cols() < 2) {
-                gStatus = "QuadCover 没有得到参数坐标";
-                return;
-            }
-            charts.resize(nFaces);
-            for (int face = 0; face < nFaces; ++face) {
-                for (int cornerIndex = 0; cornerIndex < 3; ++cornerIndex) {
-                    const int vertex = gField.triangles[face * 3 + cornerIndex];
-                    charts[face][cornerIndex] = chart.row(vertex);
-                }
-            }
-        }
-    } catch (const std::exception& exception) {
-        gStatus = std::string("四边形化失败  ") + exception.what();
-        return;
-    }
-    drawQuadMesh(charts);
-    const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
-    gStatus += "    " + std::to_string(seconds).substr(0, 4) + " 秒";
-}
-
 void callback() {
-    ImGui::Text("向量场");
     if (gModels.empty()) {
         ImGui::Text("没有找到 obj 模型");
         return;
     }
+    // 主控件：模型、算法、流线密度
     const char* preview = gModels[gModel].label.c_str();
     int requested = -1;
     if (ImGui::BeginCombo("模型", preview)) {
@@ -843,22 +737,39 @@ void callback() {
         }
         ImGui::EndCombo();
     }
-    if (ImGui::Checkbox("三角网格", &gShowEdges) && gPsMesh) gPsMesh->setEdgeWidth(gShowEdges ? 1.0 : 0.0);
     if (ImGui::SliderFloat("流线密度", &gDensity, 1.f, 40.f, "%.1f")) present(false);
-    const char* quadNames[] = {"MIQ", "QuadCover"};
-    if (ImGui::BeginCombo("四边形化", quadNames[gQuadMethod])) {
-        for (int method = 0; method < 2; ++method) {
-            if (ImGui::Selectable(quadNames[method], method == gQuadMethod)) gQuadMethod = method;
-        }
-        ImGui::EndCombo();
-    }
-    if (ImGui::Button("生成四边形网格") && gReady) quadrangulate();
     if (!gStatus.empty()) ImGui::TextWrapped("%s", gStatus.c_str());
-    ImGui::TextWrapped("%s", gCaption.c_str());
+
+    if (ImGui::CollapsingHeader("显示")) {
+        if (ImGui::Checkbox("主流线", &gShowMajor)) {
+            if (polyscope::CurveNetwork* lines = polyscope::getCurveNetwork("流线")) {
+                lines->setEnabled(gShowMajor);
+            }
+        }
+        if (ImGui::Checkbox("正交流线", &gShowMinor)) {
+            if (polyscope::CurveNetwork* lines = polyscope::getCurveNetwork("正交流线")) {
+                lines->setEnabled(gShowMinor);
+            }
+        }
+        if (ImGui::Checkbox("奇异点", &gShowSingular)) {
+            if (polyscope::PointCloud* points = polyscope::getPointCloud("奇异点")) {
+                points->setEnabled(gShowSingular);
+            }
+        }
+        if (ImGui::Checkbox("主方向箭头", &gShowArrows) && gArrowQuantity) {
+            gArrowQuantity->setEnabled(gShowArrows);
+        }
+        if (ImGui::Checkbox("三角网格", &gShowEdges) && gPsMesh) {
+            gPsMesh->setEdgeWidth(gShowEdges ? 1.0 : 0.0);
+        }
+    }
+    if (ImGui::CollapsingHeader("说明")) {
+        ImGui::TextWrapped("%s", gCaption.c_str());
+    }
 }
 
 int main(int argc, char** argv) {
-    args::ArgumentParser parser("主曲率场");
+    args::ArgumentParser parser("向量场");
     args::Positional<std::string> inputFilename(parser, "mesh", "启动时打开的网格，默认识别 bunny.obj");
     try {
         parser.ParseCLI(argc, argv);
@@ -891,7 +802,10 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    polyscope::options::programName = "主曲率场";
+    polyscope::options::programName = "向量场";
+    // 深色底 + 关闭地面，让曲面退后、流线成为主角。
+    polyscope::options::groundPlaneMode = polyscope::GroundPlaneMode::None;
+    polyscope::view::bgColor = {0.09f, 0.10f, 0.12f, 1.f};
     polyscope::init();
     polyscope::state::userCallback = callback;
     if (!showModel(gModel)) return 1;

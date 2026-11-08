@@ -65,6 +65,8 @@ Method gMethod = Method::Circle;
 int gScheme = NEWTON;
 Texture gTexture = Texture::Checker;
 bool gPickCones = false;
+bool gShowExtra = false;
+bool gAutoRun = true;
 bool gHasResult = false;
 bool gDrag = false;
 int gDragPanel = -1;
@@ -575,18 +577,20 @@ struct Panel {
     float x, y, w, h;
 };
 
-float toolbarHeight() { return 86.f; }
+float toolbarHeight() { return gShowExtra ? 118.f : 86.f; }
 
 Panel leftPanel() {
     const float top = toolbarHeight();
     const float gap = 8.f;
-    const float width = (static_cast<float>(gWidth) - 3.f * gap) * 0.5f;
+    // 结果优先：UV 面板比 3D 预览更宽。
+    const float width = (static_cast<float>(gWidth) - 3.f * gap) * 0.44f;
     return {gap, top, width, static_cast<float>(gHeight) - top - gap};
 }
 
 Panel rightPanel() {
     const Panel left = leftPanel();
-    return {left.x + left.w + 8.f, left.y, left.w, left.h};
+    const float width = static_cast<float>(gWidth) - left.x - left.w - 16.f;
+    return {left.x + left.w + 8.f, left.y, width, left.h};
 }
 
 Mat4 modelViewProjection(const Panel& panel) {
@@ -690,17 +694,20 @@ void layoutButtons() {
     addButton(cursor, y, height, 11, "CETM", gMethod == Method::Cetm);
     addButton(cursor, y, height, 12, "Ricci 流", gMethod == Method::Ricci);
     addButton(cursor, y, height, 13, "Incremental Flattening", gMethod == Method::Incremental);
-    addButton(cursor, y, height, 20, schemeName(gScheme), false);
+    cursor += 6.f;
+    addButton(cursor, y, height, 40, "展开", false);
+    addButton(cursor, y, height, 60, gShowExtra ? "收起 ▴" : "更多 ▾", gShowExtra);
+    gStatusX = cursor + 8.f;
 
+    if (!gShowExtra) return;
     cursor = 12.f;
     const float y2 = 46.f;
     addButton(cursor, y2, height, 30, gPickCones ? "锥点点选中" : "锥奇异点", gPickCones);
     addButton(cursor, y2, height, 31, "Ben-Chen 2008", false);
-    addButton(cursor, y2, height, 40, "展开", false);
     addButton(cursor, y2, height, 41, "清除", false);
     addButton(cursor, y2, height, 50, "棋盘格", gTexture == Texture::Checker);
     addButton(cursor, y2, height, 51, "共形畸变", gTexture == Texture::Distortion);
-    gStatusX = cursor + 8.f;
+    addButton(cursor, y2, height, 20, schemeName(gScheme), false);
 }
 
 void clickButton(int id) {
@@ -721,6 +728,8 @@ void clickButton(int id) {
         placeBenChenCones();
     } else if (id == 40) {
         unfold();
+    } else if (id == 60) {
+        gShowExtra = !gShowExtra;
     } else if (id == 41) {
         gHasResult = false;
         gSeconds = 0;
@@ -879,7 +888,7 @@ void drawFrame() {
         fillRect(button.x, button.y, button.w, button.h, button.on ? 0.78f : 0.88f, button.on ? 0.86f : 0.89f, button.on ? 0.95f : 0.91f, 1.f);
         drawLabel(button.label, button.x + 8.f, button.y + 5.f, true);
     }
-    drawLabel(gStatus, gStatusX, 52.f, true);
+    drawLabel(gStatus, gStatusX, gShowExtra ? 84.f : 52.f, true);
 
     glEnable(GL_DEPTH_TEST);
     const Panel left = leftPanel();
@@ -897,7 +906,7 @@ void drawFrame() {
     const int shade = gHasResult && gTexture == Texture::Checker ? 0 : 2;
     drawMesh(gTriangles, modelViewProjection(left), shade, 0);
     drawMesh(gFlips3d, modelViewProjection(left), 3, 0);
-    drawMesh(gConeMarks, modelViewProjection(left), 2, 9.f * gScale);
+    drawMesh(gConeMarks, modelViewProjection(left), 2, 11.f * gScale);
 
     viewportOf(right);
     glClearColor(0.96f, 0.96f, 0.94f, 1.f);
@@ -1016,6 +1025,14 @@ int main() {
         drawFrame();
         glfwSwapBuffers(window);
         glfwPollEvents();
+        if (gAutoRun) {
+            gAutoRun = false;
+            // 首屏先画出模型，再自动布锥点并展开一次，打开就能看到结果。
+            if (!gModels.empty() && !gSolving) {
+                placeBenChenCones();
+                unfold();
+            }
+        }
     }
     glfwDestroyWindow(window);
     gWindow = nullptr;

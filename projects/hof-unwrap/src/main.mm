@@ -60,6 +60,8 @@ int gModel = 0;
 Texture gTexture = Texture::Checker;
 bool gHasResult = false;
 bool gHasTreeCotree = false;
+bool gShowExtra = false;
+bool gAutoRun = true;
 bool gShowTree = false;
 bool gShowCotree = false;
 bool gShowHomology = false;
@@ -340,6 +342,14 @@ void captureTreeCotree(const HolomorphicOneForm::TreeCotree& treeCotree) {
 void collectSeams(const CutSeamMesh& cut) {
     gSeamLines.clear();
     gSeams = 0;
+    // 割缝画成贴面上的窄带（而不是 1px 线），宽度按平均边长缩放。
+    double edgeSum = 0;
+    int edgeCount = 0;
+    for (EdgeCIter edge = cut.edges.begin(); edge != cut.edges.end(); ++edge) {
+        edgeSum += edge->length();
+        ++edgeCount;
+    }
+    const double halfWidth = edgeCount > 0 ? std::max(0.0012, 0.045 * edgeSum / edgeCount) : 0.002;
     for (EdgeCIter edge = cut.edges.begin(); edge != cut.edges.end(); ++edge) {
         if (!cut.isCutBoundaryEdge(edge)) continue;
         const Eigen::Vector3d a = edge->he->vertex->position;
@@ -347,10 +357,23 @@ void collectSeams(const CutSeamMesh& cut) {
         Eigen::Vector3d n = edge->he->vertex->normal() + edge->he->flip->vertex->normal();
         if (n.norm() > 1e-8) n.normalize();
         else n = Eigen::Vector3d(0, 1, 0);
-        const Eigen::Vector3d lift = n * 0.004;
+        Eigen::Vector3d along = b - a;
+        if (along.norm() < 1e-12) continue;
+        along.normalize();
+        Eigen::Vector3d side = n.cross(along);
+        if (side.norm() < 1e-12) continue;
+        side *= halfWidth;
+        const Eigen::Vector3d lift = n * (halfWidth * 1.5);
         const Eigen::Vector3d color(0.95, 0.25, 0.45);
-        pushVertex(gSeamLines, a + lift, n, Eigen::Vector2d::Zero(), color);
-        pushVertex(gSeamLines, b + lift, n, Eigen::Vector2d::Zero(), color);
+        const Eigen::Vector3d a0 = a - side + lift, a1 = a + side + lift;
+        const Eigen::Vector3d b0 = b - side + lift, b1 = b + side + lift;
+        const Eigen::Vector2d uv = Eigen::Vector2d::Zero();
+        pushVertex(gSeamLines, a0, n, uv, color);
+        pushVertex(gSeamLines, a1, n, uv, color);
+        pushVertex(gSeamLines, b1, n, uv, color);
+        pushVertex(gSeamLines, a0, n, uv, color);
+        pushVertex(gSeamLines, b1, n, uv, color);
+        pushVertex(gSeamLines, b0, n, uv, color);
         ++gSeams;
     }
 }
@@ -418,7 +441,7 @@ void unfold() {
     }
     gSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
     if (!error.empty()) {
-        if (gHasTreeCotree) error += " 第二行可以看这次的 tree-cotree。";
+        if (gHasTreeCotree) error += " 点「更多」可以看这次的 tree-cotree。";
         gStatus = error;
         rebuildGeometry();
         return;
@@ -427,21 +450,23 @@ void unfold() {
     text.setf(std::ios::fixed);
     text.precision(3);
     text << "全纯 1-形式 · 亏格 " << gGenus << " · " << gSeconds << " 秒 · 翻转 " << gFlips
-         << " · 割缝 " << gSeams << "。第二行是这次的中间结果。";
+         << " · 割缝 " << gSeams << "。点「更多」看 tree-cotree。";
     gStatus = text.str();
 }
 
-float toolbarHeight() { return 118.f; }
+float toolbarHeight() { return gShowExtra ? 118.f : 84.f; }
 
 Panel leftPanel() {
     const float gap = 8.f;
-    const float width = (static_cast<float>(gWidth) - 3.f * gap) * 0.5f;
+    // 割缝是主视觉，3D 面板给得更宽。
+    const float width = (static_cast<float>(gWidth) - 3.f * gap) * 0.56f;
     return {gap, toolbarHeight(), width, static_cast<float>(gHeight) - toolbarHeight() - gap};
 }
 
 Panel rightPanel() {
     const Panel left = leftPanel();
-    return {left.x + left.w + 8.f, left.y, left.w, left.h};
+    const float width = static_cast<float>(gWidth) - left.x - left.w - 16.f;
+    return {left.x + left.w + 8.f, left.y, width, left.h};
 }
 
 Mat4 modelViewProjection(const Panel& panel) {
@@ -467,16 +492,18 @@ void layoutButtons() {
     cursor += 8.f;
     addButton(cursor, y, height, 40, "展开", false);
     addButton(cursor, y, height, 41, "清除", false);
-    addButton(cursor, y, height, 50, "棋盘格", gTexture == Texture::Checker);
-    addButton(cursor, y, height, 51, "共形畸变", gTexture == Texture::Distortion);
+    addButton(cursor, y, height, 70, gShowExtra ? "收起 ▴" : "更多 ▾", gShowExtra);
+    gStatusX = 12.f;
+    gStatusY = gShowExtra ? 84.f : 52.f;
+    if (!gShowExtra) return;
     cursor = 12.f;
     const float row2 = 46.f;
+    addButton(cursor, row2, height, 50, "棋盘格", gTexture == Texture::Checker);
+    addButton(cursor, row2, height, 51, "共形畸变", gTexture == Texture::Distortion);
     addButton(cursor, row2, height, 60, "生成树", gShowTree);
     addButton(cursor, row2, height, 61, "余树", gShowCotree);
     addButton(cursor, row2, height, 62, "同调边", gShowHomology);
     addButton(cursor, row2, height, 63, "基本环", gShowCycles);
-    gStatusX = 12.f;
-    gStatusY = 84.f;
 }
 
 void recolorDistortion() {
@@ -512,6 +539,8 @@ void clickButton(int id) {
         clearTreeCotreeView();
         gStatus = "已清除展开结果。点「展开」再算全纯 1-形式。";
         rebuildGeometry();
+    } else if (id == 70) {
+        gShowExtra = !gShowExtra;
     } else if (id == 50) {
         gTexture = Texture::Checker;
         if (!gHasResult) rebuildGeometry();
@@ -689,7 +718,7 @@ void drawFrame() {
     if (gShowTree) drawMesh(gTreeLines, mvp, 4, GL_LINES);
     if (gShowHomology) drawMesh(gHomologyLines, mvp, 4, GL_LINES);
     if (gShowCycles) drawMesh(gCycleLines, mvp, 4, GL_LINES);
-    drawMesh(gSeamLines, mvp, 4, GL_LINES);
+    drawMesh(gSeamLines, mvp, 4, GL_TRIANGLES);
     viewportOf(right);
     glClearColor(0.96f, 0.96f, 0.94f, 1.f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -790,6 +819,11 @@ int main(int argc, char** argv) {
         drawFrame();
         glfwSwapBuffers(window);
         glfwPollEvents();
+        if (gAutoRun) {
+            gAutoRun = false;
+            // 首屏先画出模型与割缝，再自动展开一次，打开就能看到结果。
+            if (!gModels.empty()) unfold();
+        }
     }
     glfwDestroyWindow(window);
     glfwTerminate();

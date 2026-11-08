@@ -47,8 +47,7 @@ add_subdirectory(../../deps/polyscope deps/polyscope)
 set_property(TARGET geometry-central PROPERTY CXX_STANDARD 17)
 
 set(PARAM_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../conformal-parameterization")
-set(MESH_SOURCES
-  "${PARAM_ROOT}/Parameterization/GlobalFieldsParam/QuadCover.cpp"
+set(MESH_CORE
   "${PARAM_ROOT}/Parameterization/GlobalFieldsParam/GlobalFieldsParameterization.cpp"
   "${PARAM_ROOT}/Parameterization/Parameterization.cpp"
   "${PARAM_ROOT}/VectorFileds/PrincipalCurvatureFields/PrincipalCurvatureField.cpp"
@@ -80,23 +79,38 @@ endfunction()
 add_executable(main
   src/main.cpp
   src/models.cpp
-  ${MESH_SOURCES}
+  ${MESH_CORE}
   "${PARAM_ROOT}/VectorFileds/NRosyVectorFields.cpp"
   "${PARAM_ROOT}/VectorFileds/ComplexPolyField/ComplexPolyField.cpp"
-  "${PARAM_ROOT}/Parameterization/GlobalFieldsParam/MIQQuad.cpp"
-  "${PARAM_ROOT}/Solvers/MixedIntegerProgram.cpp"
 )
 link_viewer(main)
 
 add_executable(quad_test
   src/quad_test.cpp
+  src/geogram_quadcover.cpp
   src/models.cpp
-  ${MESH_SOURCES}
+  ${MESH_CORE}
   "${PARAM_ROOT}/Parameterization/GlobalFieldsParam/MIQQuad.cpp"
+  "${PARAM_ROOT}/Parameterization/GlobalFieldsParam/QuadCover.cpp"
   "${PARAM_ROOT}/Solvers/MixedIntegerProgram.cpp"
   "${PARAM_ROOT}/QuadMeshing/NaiveQuadMerge.cpp"
 )
 link_viewer(quad_test)
+find_path(GEOGRAM_INCLUDE_DIR geogram/parameterization/mesh_PGP_2d.h
+  PATHS
+    /opt/homebrew/opt/geogram/include/geogram1
+    /usr/local/opt/geogram/include/geogram1
+)
+find_library(GEOGRAM_LIBRARY NAMES geogram
+  PATHS
+    /opt/homebrew/opt/geogram/lib
+    /usr/local/opt/geogram/lib
+)
+if(NOT GEOGRAM_INCLUDE_DIR OR NOT GEOGRAM_LIBRARY)
+  message(FATAL_ERROR "quad_test needs geogram (brew install geogram)")
+endif()
+target_include_directories(quad_test PRIVATE "${GEOGRAM_INCLUDE_DIR}")
+target_link_libraries(quad_test "${GEOGRAM_LIBRARY}")
 
 enable_language(OBJCXX)
 set(CMAKE_OBJCXX_STANDARD 17)

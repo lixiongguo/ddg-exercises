@@ -111,10 +111,12 @@ const Algo kAlgos[] = {
     Algo::Lscm, Algo::Scp, Algo::Arap, Algo::TutteCircle, Algo::Abfpp, Algo::LinAbfAlgo, Algo::BdLscm,
 };
 const int kAlgoCount = 7;
-const float kCell = 220.f;
+const float kCell = 260.f;
 const float kGap = 16.f;
 const float kMargin = 16.f;
 const float kHud = 42.f;
+// 自适应适配时单格不缩到这个尺寸以下（点），宁可让画布略微溢出、靠拖动查看。
+const float kMinCellPoints = 300.f;
 
 std::filesystem::path executableDir() {
 #ifdef __APPLE__
@@ -134,7 +136,7 @@ void addDir(std::vector<std::filesystem::path>& dirs, const std::filesystem::pat
 }
 
 void addNearby(std::vector<std::filesystem::path>& dirs, const std::filesystem::path& start) {
-    const char* suffixes[] = {"assets/Models", "assets/Model1"};
+    const char* suffixes[] = {"assets/Models", "assets/Model1", "input", "assets/Models2"};
     std::error_code error;
     std::filesystem::path dir = std::filesystem::weakly_canonical(start, error);
     if (error || dir.empty()) return;
@@ -170,7 +172,7 @@ std::vector<DiskModel> listDisks() {
     std::vector<std::filesystem::path> dirs;
     const std::filesystem::path exe = executableDir();
     const char* relatives[] = {
-        "../../../../assets/Models", "../../../../assets/Model1", "assets/Models", "assets/Model1",
+        "../../../../assets/Models", "../../../../assets/Model1", "assets/Models", "assets/Model1", "input",
     };
     for (const char* relative : relatives) addDir(dirs, relative);
     if (!exe.empty()) {
@@ -1677,6 +1679,9 @@ void fitView() {
     const float gw = gridWidth();
     const float gh = gridHeight(gRows);
     gView.scale = std::max(0.05f, std::min(availW / gw, availH / gh) * 0.98f);
+    // 结果优先：缩到看不清时改为默认放大，允许画布溢出，按 F 可再回到全览。
+    const float readable = kMinCellPoints * gView.contentScale / kCell;
+    gView.scale = std::min(8.f, std::max(gView.scale, readable));
     const float cx = gw * 0.5f;
     const float cy = gh * 0.5f;
     const float sx = availW * 0.5f;
@@ -2812,7 +2817,7 @@ int main(int argc, char** argv) {
                     glUniform1f(scaleLoc, gView.scale);
                     glUniform2f(screenLoc, static_cast<float>(gView.fbW), static_cast<float>(gView.fbH));
                     std::vector<ScreenVert> overlays;
-                    const float seamHalf = std::max(1.5f, 1.7f * gView.contentScale);
+                    const float seamHalf = std::max(2.4f, 2.2f * gView.contentScale);
                     appendProjectedLines(overlays, mvp, sx, sy, sw, sh, cell.seamPos, seamHalf, 1.f, 0.231f, 0.42f);
                     drawScreen(overlays, 1, 0);
                     glDisable(GL_SCISSOR_TEST);
@@ -2848,7 +2853,7 @@ int main(int argc, char** argv) {
                 glBindVertexArray(cell.vao);
                 glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, cell.lineEbo);
                 glDrawElements(GL_LINES, cell.lineCount, GL_UNSIGNED_INT, nullptr);
-                const float seamHalf = std::max(1.5f, 1.7f * gView.contentScale);
+                const float seamHalf = std::max(2.4f, 2.2f * gView.contentScale);
                 drawUvLines(cell, cell.seamUv, cellX(model), cellY(model), kCell, kCell, false, 1.f, 0.231f, 0.42f, seamHalf);
             }
         }
@@ -3011,7 +3016,7 @@ int main(int argc, char** argv) {
                         glDrawElements(GL_LINES, cell.lineCount, GL_UNSIGNED_INT, nullptr);
                         glUniform2f(viewLoc, gView.originX, gView.originY);
                         glUniform1f(scaleLoc, gView.scale);
-                        const float seamHalf = std::max(1.5f, 1.7f * gView.contentScale);
+                        const float seamHalf = std::max(2.4f, 2.2f * gView.contentScale);
                         drawUvLines(cell, cell.seamUv, viewUv.x, chartY, viewUv.w, chartH, true, 1.f, 0.231f, 0.42f, seamHalf);
                     }
                 }
@@ -3061,14 +3066,15 @@ int main(int argc, char** argv) {
         std::vector<ScreenVert> buttonText;
         appendText(buttonText, buttonLabel, button.x + 10.f * gView.contentScale, button.y + 4.f * gView.contentScale);
         drawScreen(buttonText, 2, buttonLabel.tex);
-        const std::string hudText = gEd.open
+        std::string hudText = gEd.open
             ? gEd.status
             : (done >= modelCount ? (gQuality == QualityView::Area
-                                       ? "面积畸变贴在三维模型上    已去掉整体缩放    绿 = 1    红 ≥ 1.5    黄面是翻转"
+                                       ? "面积畸变 · 已去整体缩放 · 绿1 红≥1.5 · 黄=翻转"
                                        : gQuality == QualityView::Conformal
-                                             ? "共形畸变贴在三维模型上    K=σ1/σ2    绿 = 1    红 ≥ 1.5    黄面是翻转"
-                                             : "棋盘格贴在三维模型上    粉红线是切缝    黄面是翻转")
+                                             ? "共形畸变 K=σ1/σ2 · 绿1 红≥1.5 · 黄=翻转"
+                                             : "棋盘格 · 粉线是切缝 · 黄=翻转")
                                   : ("正在计算 " + std::to_string(done) + " / " + std::to_string(modelCount)));
+        if (!gEd.open && done >= modelCount) hudText += "    拖动平移 · F 适配";
         const TextImage hudImage = cachedText(hudText, fontPx);
         std::vector<ScreenVert> hudLabel;
         appendText(hudLabel, hudImage, view.x + view.w + 18.f * gView.contentScale, 10.f * gView.contentScale);
