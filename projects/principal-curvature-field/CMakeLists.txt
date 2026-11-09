@@ -78,6 +78,7 @@ endfunction()
 
 add_executable(main
   src/main.cpp
+  src/hodge.cpp
   src/models.cpp
   ${MESH_CORE}
   "${PARAM_ROOT}/VectorFileds/NRosyVectorFields.cpp"

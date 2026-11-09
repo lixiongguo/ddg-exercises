@@ -1,5 +1,6 @@
 // Principal curvature field from geometry-central's dihedral-angle curvature tensor.
 
+#include "hodge.h"
 #include "models.h"
 
 #include "ComplexPolyField.h"
@@ -24,6 +25,7 @@
 #include <cmath>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -53,12 +55,24 @@ bool gShowMajor = true;
 bool gShowMinor = true;
 bool gShowSingular = true;
 bool gShowArrows = false;
+bool gShowHodgeGradient = true;
+bool gShowHodgeCurl = false;
+bool gShowHodgeHarmonic = false;
+bool gShowHodgePotential = false;
+bool gHodgeQuad = false;
 bool gReady = false;
+HodgeSplit gHodge;
 polyscope::SurfaceMesh* gPsMesh = nullptr;
 polyscope::SurfaceFaceVectorQuantity* gArrowQuantity = nullptr;
+polyscope::SurfaceFaceVectorQuantity* gHodgeGradQuantity = nullptr;
+polyscope::SurfaceFaceVectorQuantity* gHodgeCurlQuantity = nullptr;
+polyscope::SurfaceFaceVectorQuantity* gHodgeHarmQuantity = nullptr;
+polyscope::SurfaceVertexScalarQuantity* gHodgePotentialQuantity = nullptr;
 Mesh gSurface;
 std::string gStatus;
 std::string gCaption = kAlgos[0].caption;
+std::string gSnapshotPath;
+int gSnapshotFrames = 0;
 
 glm::vec3 at(const Eigen::MatrixXd& points, int row) {
     return glm::vec3(points(row, 0), points(row, 1), points(row, 2));
@@ -637,6 +651,23 @@ bool computePoly(PrincipalField& field, FieldPicture& singularities, std::string
     return singularitiesFromDirections(field, singularities, error);
 }
 
+// 当前面的方向场是十字场，取分支时按 90° 的整数倍对齐，再拆成 ∇u + n×∇v + h。
+void refreshHodge() {
+    gHodge = {};
+    const int nFaces = static_cast<int>(gField.directions.rows());
+    if (nFaces <= 0 || gField.triangles.size() != 3 * nFaces) return;
+    Eigen::MatrixXi faces(nFaces, 3);
+    for (int face = 0; face < nFaces; ++face) {
+        faces.row(face) << gField.triangles[face * 3], gField.triangles[face * 3 + 1], gField.triangles[face * 3 + 2];
+    }
+    try {
+        gHodge = decomposeHodge(gField.positions, faces, gField.directions, 4);
+    } catch (const std::exception& exception) {
+        gHodge = {};
+        gHodge.note = exception.what();
+    }
+}
+
 bool computeSelected(int algo, std::string& error) {
     PrincipalField field;
     FieldPicture singularities;
@@ -656,11 +687,152 @@ bool computeSelected(int algo, std::string& error) {
     gSingularities = std::move(singularities);
     gAlgo = algo;
     gCaption = kAlgos[gAlgo].caption;
+    refreshHodge();
     return true;
+}
+
+// Hodge 分解的三项用面箭头画出来：绿=可积梯度，蓝=旋度，洋红=调和残余。
+void drawHodge(polyscope::SurfaceMesh* mesh) {
+    if (mesh == nullptr || !gHodge.ok) return;
+    const size_t nFaces = static_cast<size_t>(mesh->nFaces());
+    if (gHodge.gradient.size() == nFaces) {
+        gHodgeGradQuantity = mesh->addFaceVectorQuantity("Hodge 梯度", gHodge.gradient);
+        if (gHodgeGradQuantity) {
+            gHodgeGradQuantity->setVectorColor({0.24f, 0.72f, 0.42f});
+            gHodgeGradQuantity->setEnabled(gShowHodgeGradient);
+        }
+    }
+    if (gHodge.curl.size() == nFaces) {
+        gHodgeCurlQuantity = mesh->addFaceVectorQuantity("Hodge 旋度", gHodge.curl);
+        if (gHodgeCurlQuantity) {
+            gHodgeCurlQuantity->setVectorColor({0.20f, 0.55f, 0.95f});
+            gHodgeCurlQuantity->setEnabled(gShowHodgeCurl);
+        }
+    }
+    if (gHodge.harmonic.size() == nFaces) {
+        gHodgeHarmQuantity = mesh->addFaceVectorQuantity("Hodge 调和", gHodge.harmonic);
+        if (gHodgeHarmQuantity) {
+            gHodgeHarmQuantity->setVectorColor({0.92f, 0.30f, 0.62f});
+            gHodgeHarmQuantity->setEnabled(gShowHodgeHarmonic);
+        }
+    }
+    if (gHodge.potentialU.size() == static_cast<size_t>(mesh->nVertices())) {
+        gHodgePotentialQuantity = mesh->addVertexScalarQuantity("势 u", gHodge.potentialU);
+        if (gHodgePotentialQuantity) {
+            gHodgePotentialQuantity->setColorMap("viridis");
+            gHodgePotentialQuantity->setEnabled(gShowHodgePotential);
+        }
+    }
 }
 
 float spacingEdgesForDensity(float density) {
     return std::max(0.22f, 10.f / std::max(density, 0.5f));
+}
+
+// 四联对比：原场与三个分量左右并排，各自用流线画。
+// 只看箭头很难判断「旋度有没有闭合」「调和项是不是沿拓扑绕行」，摆在一起逐列对比就一目了然。
+bool drawQuad(bool resetCamera) {
+    if (!gHodge.ok) return false;
+    const int nFaces = static_cast<int>(gField.directions.rows());
+    const int nVerts = static_cast<int>(gField.positions.rows());
+    if (nFaces <= 0 || nVerts <= 0) return false;
+    if (static_cast<int>(gHodge.gradient.size()) != nFaces ||
+        static_cast<int>(gHodge.curl.size()) != nFaces ||
+        static_cast<int>(gHodge.harmonic.size()) != nFaces) {
+        return false;
+    }
+
+    const Eigen::VectorXd minCorner = gField.positions.colwise().minCoeff();
+    const Eigen::VectorXd maxCorner = gField.positions.colwise().maxCoeff();
+    const double width = std::max(1e-6, maxCorner(0) - minCorner(0));
+    const double step = width * 1.18;
+    const double center = 0.5 * (minCorner(0) + maxCorner(0));
+
+    std::vector<glm::vec3> original(nFaces);
+    for (int face = 0; face < nFaces; ++face) original[face] = at(gField.directions, face);
+
+    struct Panel {
+        std::string label;
+        glm::vec3 color;
+        std::vector<glm::vec3> directions;
+        bool bothFamilies;
+    };
+    const std::vector<Panel> panels = {
+        {"原场", {0.95f, 0.45f, 0.07f}, original, true},
+        {"梯度 ∇u", {0.24f, 0.72f, 0.42f}, gHodge.gradient, false},
+        {"旋度 n×∇v", {0.20f, 0.55f, 0.95f}, gHodge.curl, false},
+        {"调和 h", {0.92f, 0.30f, 0.62f}, gHodge.harmonic, false},
+    };
+
+    for (int panelIndex = 0; panelIndex < static_cast<int>(panels.size()); ++panelIndex) {
+        const Panel& panel = panels[panelIndex];
+        PrincipalField field = gField;
+        for (int face = 0; face < nFaces; ++face) {
+            const glm::vec3& direction = panel.directions[face];
+            if (glm::length(direction) < 1e-12f) field.directions.row(face) << 0.0, 0.0, 0.0;
+            else field.directions.row(face) << direction.x, direction.y, direction.z;
+        }
+        const double shift = (panelIndex - 1.5) * step - center;
+        field.positions.col(0).array() += shift;
+
+        std::vector<glm::vec3> points(static_cast<size_t>(nVerts));
+        for (int vertex = 0; vertex < nVerts; ++vertex) points[vertex] = at(field.positions, vertex);
+        std::vector<std::array<size_t, 3>> faces(static_cast<size_t>(nFaces));
+        for (int face = 0; face < nFaces; ++face) {
+            faces[face] = {
+                static_cast<size_t>(field.triangles[face * 3]),
+                static_cast<size_t>(field.triangles[face * 3 + 1]),
+                static_cast<size_t>(field.triangles[face * 3 + 2]),
+            };
+        }
+        polyscope::SurfaceMesh* mesh = polyscope::registerSurfaceMesh(panel.label + " 网格", points, faces);
+        mesh->setSmoothShade(true);
+        mesh->setSurfaceColor({0.13, 0.14, 0.17});
+        mesh->setEdgeWidth(gShowEdges ? 0.6 : 0.0);
+        if (panelIndex == 0) gPsMesh = mesh;
+
+        const FieldPicture picture = buildPicture(field, spacingEdgesForDensity(gDensity));
+        if (!picture.majorEdges.empty()) {
+            polyscope::CurveNetwork* lines =
+                polyscope::registerCurveNetwork(panel.label + " 流线", picture.majorNodes, picture.majorEdges);
+            lines->setColor(panel.color);
+            lines->setMaterial("flat");
+            lines->setRadius(0.0008f, true);
+        }
+        if (panel.bothFamilies && !picture.minorEdges.empty()) {
+            polyscope::CurveNetwork* minor =
+                polyscope::registerCurveNetwork(panel.label + " 正交流线", picture.minorNodes, picture.minorEdges);
+            minor->setColor({0.20f, 0.50f, 0.90f});
+            minor->setMaterial("flat");
+            minor->setRadius(0.0005f, true);
+        }
+    }
+
+    // 自己算相机：四列并排后 resetCameraToHomeView() 只框住中间两列，会切掉首尾。
+    // 按窗口宽高比分别匹配「整排宽度」和「单个模型高度」，取较远的那个距离。
+    if (resetCamera) {
+        const Eigen::Vector3d extent = maxCorner - minCorner;
+        const double halfWidth = 0.5 * (3.0 * step + extent(0)) * 1.02;
+        const double halfHeight = 0.5 * extent(1) * 1.02;
+        const glm::vec3 target(static_cast<float>(0.5 * (minCorner(0) + maxCorner(0))),
+                               static_cast<float>(0.5 * (minCorner(1) + maxCorner(1))),
+                               static_cast<float>(0.5 * (minCorner(2) + maxCorner(2))));
+        const glm::vec3 direction = glm::normalize(glm::vec3(0.22f, 0.14f, 1.0f));
+        const double verticalFov = 45.0 * kPi / 180.0;
+        const double aspect = polyscope::view::windowHeight > 0
+                                  ? static_cast<double>(polyscope::view::windowWidth) / polyscope::view::windowHeight
+                                  : 1.6;
+        const double horizontalFov = 2.0 * std::atan(std::tan(0.5 * verticalFov) * aspect);
+        const double fitWidth = halfWidth / std::tan(0.5 * horizontalFov);
+        const double fitHeight = halfHeight / std::tan(0.5 * verticalFov);
+        const double distance = std::max(fitWidth, fitHeight) * 1.02;
+        const glm::vec3 eye = target + direction * static_cast<float>(distance);
+        polyscope::CameraParameters camera;
+        camera.E = glm::lookAt(eye, target, glm::vec3(0.f, 1.f, 0.f));
+        camera.fov = 45.f;
+        polyscope::view::setViewToCamera(camera);
+    }
+    return true;
 }
 
 void present(bool resetCamera) {
@@ -676,19 +848,32 @@ void present(bool resetCamera) {
             static_cast<size_t>(gField.triangles[face * 3 + 2]),
         };
     }
+    polyscope::removeAllStructures();
+    gArrowQuantity = nullptr;
+    gHodgeGradQuantity = nullptr;
+    gHodgeCurlQuantity = nullptr;
+    gHodgeHarmQuantity = nullptr;
+    gHodgePotentialQuantity = nullptr;
+    gPsMesh = nullptr;
+
+    if (gHodgeQuad && drawQuad(resetCamera)) {
+        gStatus = gModels[gModel].label + "    " + kAlgos[gAlgo].name +
+                  "    四联对比：原场 → 梯度 / 旋度 / 调和";
+        return;
+    }
+
     FieldPicture picture = buildPicture(gField, spacingEdgesForDensity(gDensity));
     picture.singularPoints = gSingularities.singularPoints;
     picture.singularColors = gSingularities.singularColors;
     picture.positive = gSingularities.positive;
     picture.negative = gSingularities.negative;
-    polyscope::removeAllStructures();
-    gArrowQuantity = nullptr;
     gPsMesh = polyscope::registerSurfaceMesh(gModels[gModel].label, positions, triangles);
     gPsMesh->setSmoothShade(true);
     gPsMesh->setSurfaceColor({0.34, 0.36, 0.40});
     gPsMesh->setEdgeColor({0.55, 0.58, 0.62});
     gPsMesh->setEdgeWidth(gShowEdges ? 1.0 : 0.0);
     drawField(gPsMesh, picture);
+    drawHodge(gPsMesh);
     if (resetCamera) polyscope::view::resetCameraToHomeView();
     gStatus = gModels[gModel].label + "    " + kAlgos[gAlgo].name + "    " + std::to_string(nFaces) + " 面    流线 " +
               std::to_string(picture.majorCurves) + " / " + std::to_string(picture.minorCurves) + "    奇异点 +" +
@@ -713,6 +898,10 @@ bool showModel(int index) {
 }
 
 void callback() {
+    if (!gSnapshotPath.empty()) {
+        // 等几帧让流线布好、相机稳定，再截图退出，方便无人工核对渲染结果。
+        if (++gSnapshotFrames == 8) polyscope::screenshot(gSnapshotPath);
+    }
     if (gModels.empty()) {
         ImGui::Text("没有找到 obj 模型");
         return;
@@ -763,6 +952,38 @@ void callback() {
             gPsMesh->setEdgeWidth(gShowEdges ? 1.0 : 0.0);
         }
     }
+    if (ImGui::CollapsingHeader("Hodge 分解")) {
+        if (!gHodge.ok) {
+            ImGui::TextWrapped("暂无分解结果：%s", gHodge.note.c_str());
+        } else {
+            const double total = gHodge.total > 1e-18 ? gHodge.total : 1.0;
+            ImGui::Text("能量占比：梯度 %.1f%% / 旋度 %.1f%% / 调和 %.1f%%",
+                        100.0 * gHodge.gradientEnergy / total,
+                        100.0 * gHodge.curlEnergy / total,
+                        100.0 * gHodge.harmonicEnergy / total);
+            ImGui::Text("残差：div %.2e   curl %.2e", gHodge.divResidual, gHodge.curlResidual);
+            if (ImGui::Checkbox("四联对比（原场 ‖ 三项并排）", &gHodgeQuad)) present(false);
+            ImGui::Separator();
+            if (gHodgeQuad) {
+                ImGui::TextWrapped("当前是四联视图：从左到右为原场、梯度、旋度、调和，颜色与下面开关一致。");
+                ImGui::TextWrapped("想单独放大某一项时，取消四联再用下面的开关。");
+            } else {
+                if (ImGui::Checkbox("梯度分量 ∇u", &gShowHodgeGradient) && gHodgeGradQuantity) {
+                    gHodgeGradQuantity->setEnabled(gShowHodgeGradient);
+                }
+                if (ImGui::Checkbox("旋度分量 n×∇v", &gShowHodgeCurl) && gHodgeCurlQuantity) {
+                    gHodgeCurlQuantity->setEnabled(gShowHodgeCurl);
+                }
+                if (ImGui::Checkbox("调和分量 h", &gShowHodgeHarmonic) && gHodgeHarmQuantity) {
+                    gHodgeHarmQuantity->setEnabled(gShowHodgeHarmonic);
+                }
+                if (ImGui::Checkbox("标量势 u", &gShowHodgePotential) && gHodgePotentialQuantity) {
+                    gHodgePotentialQuantity->setEnabled(gShowHodgePotential);
+                }
+            }
+            ImGui::TextWrapped("%s", gHodge.note.c_str());
+        }
+    }
     if (ImGui::CollapsingHeader("说明")) {
         ImGui::TextWrapped("%s", gCaption.c_str());
     }
@@ -771,6 +992,9 @@ void callback() {
 int main(int argc, char** argv) {
     args::ArgumentParser parser("向量场");
     args::Positional<std::string> inputFilename(parser, "mesh", "启动时打开的网格，默认识别 bunny.obj");
+    args::Flag hodgeStats(parser, "hodge-stats", "不开窗口，只对四种算法各算一次 Hodge 分解并打印能量占比", {"hodge-stats"});
+    args::Flag hodgeQuadFlag(parser, "hodge-quad", "启动后直接进入四联对比视图", {"hodge-quad"});
+    args::ValueFlag<std::string> snapshot(parser, "png", "启动后把窗口截到该路径并退出", {"snapshot"});
     try {
         parser.ParseCLI(argc, argv);
     } catch (const args::Help&) {
@@ -802,6 +1026,32 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // 无窗口自检：四种场各算一次分解，方便在命令行核对三项的占比与残差。
+    if (hodgeStats) {
+        if (!gSurface.read(gModels[gModel].path.string())) {
+            std::cerr << "无法读取 " << gModels[gModel].path << std::endl;
+            return 1;
+        }
+        std::cout << "模型 " << gModels[gModel].label << std::endl;
+        for (int algo = 0; algo < static_cast<int>(sizeof(kAlgos) / sizeof(kAlgos[0])); ++algo) {
+            std::string error;
+            if (!computeSelected(algo, error)) {
+                std::cout << kAlgos[algo].name << "  失败：" << error << std::endl;
+                continue;
+            }
+            const double total = gHodge.total > 1e-18 ? gHodge.total : 1.0;
+            std::cout << kAlgos[algo].name << "  面 " << gField.directions.rows()
+                      << "  梯度 " << 100.0 * gHodge.gradientEnergy / total << "%"
+                      << "  旋度 " << 100.0 * gHodge.curlEnergy / total << "%"
+                      << "  调和 " << 100.0 * gHodge.harmonicEnergy / total << "%"
+                      << "  div残差 " << gHodge.divResidual
+                      << "  curl残差 " << gHodge.curlResidual << std::endl;
+        }
+        return 0;
+    }
+
+    if (hodgeQuadFlag) gHodgeQuad = true;
+    if (snapshot) gSnapshotPath = args::get(snapshot);
     polyscope::options::programName = "向量场";
     // 深色底 + 关闭地面，让曲面退后、流线成为主角。
     polyscope::options::groundPlaneMode = polyscope::GroundPlaneMode::None;
@@ -809,6 +1059,7 @@ int main(int argc, char** argv) {
     polyscope::init();
     polyscope::state::userCallback = callback;
     if (!showModel(gModel)) return 1;
-    polyscope::show();
+    // 截图模式只跑十来帧就退出，否则一直开窗。
+    polyscope::show(gSnapshotPath.empty() ? std::numeric_limits<size_t>::max() : size_t{12});
     return 0;
 }
