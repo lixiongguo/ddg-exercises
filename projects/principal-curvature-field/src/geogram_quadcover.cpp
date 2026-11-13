@@ -1,9 +1,11 @@
 #include "geogram_quadcover.h"
 
 #include <cmath>
+#include <cstdlib>
 #include <stdexcept>
 
 #include <geogram/basic/common.h>
+#include <geogram/basic/logger.h>
 #include <geogram/mesh/mesh.h>
 #include <geogram/parameterization/mesh_PGP_2d.h>
 

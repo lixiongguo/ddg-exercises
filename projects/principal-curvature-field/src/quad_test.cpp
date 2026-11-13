@@ -20,6 +20,7 @@
 
 #include <array>
 #include <chrono>
+#include <fstream>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -292,7 +293,15 @@ int drawIntegerQuads(const std::vector<glm::vec3>& positions, const std::vector<
         const glm::vec3& b = positions[faces[face][1]];
         edgeSum += glm::length(b - a);
     }
-    const float lift = nFaces > 0 ? static_cast<float>(0.02 * edgeSum / nFaces) : 0.f;
+    // 抬升必须大于线管半径（下面 setRadius 用的是相对包围盒的值），
+    // 否则线管一半埋在曲面里，曲率一变就被面片吞掉，看起来像一格一格的断裂。
+    glm::vec3 lo(1e30f), hi(-1e30f);
+    for (const glm::vec3& p : positions) {
+        lo = glm::min(lo, p);
+        hi = glm::max(hi, p);
+    }
+    const float diagonal = glm::length(hi - lo);
+    const float lift = std::max(0.0032f * diagonal, 1e-7f);
     const int cornerOf[3][2] = {{0, 1}, {1, 2}, {2, 0}};
     std::vector<glm::vec3> nodes;
     std::vector<std::array<size_t, 2>> edges;
@@ -304,7 +313,12 @@ int drawIntegerQuads(const std::vector<glm::vec3>& positions, const std::vector<
         const float normalLength = glm::length(normal);
         if (normalLength > 1e-8f) normal /= normalLength;
         const glm::vec3 offset = normal * lift;
+        static const int axisFilter = [] {
+            const char* env = std::getenv("QUAD_TEST_AXIS");
+            return env ? std::atoi(env) : -1;
+        }();
         for (int axis = 0; axis < 2; ++axis) {
+            if (axisFilter >= 0 && axis != axisFilter) continue;
             const double value[3] = {
                 cornerUV[static_cast<size_t>(face) * 6 + axis],
                 cornerUV[static_cast<size_t>(face) * 6 + 2 + axis],
@@ -342,7 +356,7 @@ int drawIntegerQuads(const std::vector<glm::vec3>& positions, const std::vector<
     if (edges.empty()) return 0;
     polyscope::CurveNetwork* network = polyscope::registerCurveNetwork("四边形", nodes, edges);
     network->setColor({1.0f, 0.55f, 0.08f});
-    network->setRadius(0.0019f, true);
+    network->setRadius(0.0014f, true);
     network->setEnabled(true);
     return static_cast<int>(edges.size());
 }
@@ -372,6 +386,7 @@ bool showCase(int modelIndex, Algo algo) {
     gPsMesh->setSurfaceColor({0.34, 0.36, 0.40});
     gPsMesh->setEdgeColor({0.55, 0.58, 0.62});
     gPsMesh->setEdgeWidth(gShowEdges ? 1.0 : 0.0);
+    if (std::getenv("QUAD_TEST_NO_SURFACE")) gPsMesh->setEnabled(false);  // 调试：只看线
     polyscope::SurfaceMesh* psMesh = gPsMesh;
 
     std::string summary;
@@ -441,6 +456,18 @@ bool showCase(int modelIndex, Algo algo) {
             // every seam, so the quad size is chosen through PGP's own scaling
             // argument instead.
             std::vector<double> cornerUV = cover.cornerUV;
+            if (const char* dump = std::getenv("QUAD_TEST_DUMP")) {
+                std::ofstream out(dump);
+                for (size_t face = 0; face < triangles.faces.size(); ++face) {
+                    out << triangles.faces[face][0] << ' ' << triangles.faces[face][1] << ' '
+                        << triangles.faces[face][2];
+                    for (int k = 0; k < 3; ++k) {
+                        out << ' ' << cornerUV[face * 6 + k * 2] << ' ' << cornerUV[face * 6 + k * 2 + 1];
+                    }
+                    out << '\n';
+                }
+                std::cout << "已导出 UV: " << dump << std::endl;
+            }
             const int segments = drawIntegerQuads(triangles.positions, triangles.faces, cornerUV);
             summary = "Geogram PGP，" + std::to_string(segments) + " 条四边形边" +
                       seamText(triangles.faces, cornerUV);
@@ -535,6 +562,10 @@ int main(int argc, char** argv) {
     if (argc > 2) {
         const int algo = std::atoi(argv[2]);
         if (algo >= 0 && algo < kAlgoCount) gAlgo = static_cast<Algo>(algo);
+    }
+    if (argc > 3) {
+        const float size = static_cast<float>(std::atof(argv[3]));
+        if (size >= 0.25f && size <= 4.f) gQuadSize = size;
     }
     polyscope::options::programName = "四边形网格";
     // 深色底 + 关闭地面，让四边形线成为画面主体。
