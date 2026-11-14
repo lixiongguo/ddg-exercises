@@ -2,8 +2,9 @@
 #define GLFW_INCLUDE_NONE
 #include <OpenGL/gl3.h>
 #include <GLFW/glfw3.h>
-#include <AppKit/AppKit.h>
-#include <CoreText/CoreText.h>
+
+#include "imgui.h"
+#include "imgui_chrome.h"
 
 #include "HolomorphicOneForm.h"
 #include "Mesh.h"
@@ -18,26 +19,12 @@
 #include <iostream>
 #include <sstream>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 namespace {
 
 struct DrawVertex {
     float px, py, pz, nx, ny, nz, u, v, r, g, b;
-};
-
-struct TextImage {
-    GLuint texture = 0;
-    int width = 1;
-    int height = 1;
-};
-
-struct Button {
-    float x = 0, y = 0, w = 0, h = 0;
-    int id = 0;
-    bool on = false;
-    std::string label;
 };
 
 struct Mat4 {
@@ -79,14 +66,11 @@ int gSeams = 0;
 int gGenus = 0;
 int gWidth = 1440, gHeight = 860;
 float gScale = 1.f;
-float gStatusX = 12.f;
-float gStatusY = 86.f;
-std::vector<Button> gButtons;
-std::unordered_map<std::string, TextImage> gText;
+bool gUnfoldNow = false;
 std::vector<DrawVertex> gTriangles, gUvTriangles, gFlipTris, gFlips3d, gSeamLines;
 std::vector<DrawVertex> gTreeLines, gCotreeLines, gHomologyLines, gCycleLines;
 
-GLuint gProgram = 0, gFlatProgram = 0, gVao = 0, gBuffer = 0;
+GLuint gProgram = 0, gVao = 0, gBuffer = 0;
 
 Mat4 multiply(const Mat4& a, const Mat4& b) {
     Mat4 out;
@@ -107,6 +91,7 @@ Mat4 perspective(float fov, float aspect, float nearPlane, float farPlane) {
     out.m[10] = (farPlane + nearPlane) / (nearPlane - farPlane);
     out.m[11] = -1.f;
     out.m[14] = (2.f * farPlane * nearPlane) / (nearPlane - farPlane);
+    out.m[15] = 0.f;
     return out;
 }
 
@@ -159,7 +144,7 @@ void fitCamera() {
     }
     const Eigen::Vector3d mid = sum / std::max(1, static_cast<int>(gMesh.vertices.size()));
     gCenter = {static_cast<float>(mid.x()), static_cast<float>(mid.y()), static_cast<float>(mid.z())};
-    gRadius = static_cast<float>((hi - lo).norm()) * 1.15f;
+    gRadius = static_cast<float>((hi - lo).norm()) * 1.8f;
     if (gRadius < 0.2f) gRadius = 2.f;
 }
 
@@ -171,45 +156,6 @@ int meshGenus() {
     const int chi = static_cast<int>(gMesh.vertices.size()) - static_cast<int>(gMesh.edges.size()) + faces;
     if (!gMesh.boundaries.empty()) return 0;
     return std::max(0, (2 - chi) / 2);
-}
-
-TextImage rasterText(const std::string& text, float pixelHeight, bool dark) {
-    const std::string key = text + "|" + std::to_string(static_cast<int>(pixelHeight)) + (dark ? "|d" : "|w");
-    const auto found = gText.find(key);
-    if (found != gText.end()) return found->second;
-    TextImage image;
-    @autoreleasepool {
-        NSString* string = [NSString stringWithUTF8String:text.c_str()];
-        if (string == nil) string = @"";
-        NSFont* font = [NSFont systemFontOfSize:pixelHeight];
-        NSColor* color = dark ? [NSColor colorWithCalibratedWhite:0.12 alpha:1.0]
-                              : [NSColor colorWithCalibratedWhite:0.95 alpha:1.0];
-        NSDictionary* attributes = @{NSFontAttributeName: font, NSForegroundColorAttributeName: color};
-        const NSSize measured = [string sizeWithAttributes:attributes];
-        image.width = std::max(1, static_cast<int>(std::ceil(measured.width)) + 4);
-        image.height = std::max(1, static_cast<int>(std::ceil(measured.height)) + 4);
-        std::vector<unsigned char> pixels(static_cast<size_t>(image.width * image.height * 4), 0);
-        CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
-        CGContextRef context = CGBitmapContextCreate(pixels.data(), image.width, image.height, 8, image.width * 4, space,
-                                                     kCGImageAlphaPremultipliedLast);
-        CGContextTranslateCTM(context, 0, image.height);
-        CGContextScaleCTM(context, 1, -1);
-        NSGraphicsContext* graphics = [NSGraphicsContext graphicsContextWithCGContext:context flipped:YES];
-        [NSGraphicsContext saveGraphicsState];
-        [NSGraphicsContext setCurrentContext:graphics];
-        [string drawAtPoint:NSMakePoint(2, 2) withAttributes:attributes];
-        [NSGraphicsContext restoreGraphicsState];
-        CGContextRelease(context);
-        CGColorSpaceRelease(space);
-        glGenTextures(1, &image.texture);
-        glBindTexture(GL_TEXTURE_2D, image.texture);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, image.width, image.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
-    }
-    gText[key] = image;
-    return image;
 }
 
 void pushVertex(std::vector<DrawVertex>& target, const Eigen::Vector3d& p, const Eigen::Vector3d& n,
@@ -427,7 +373,7 @@ void unfold() {
         gHasResult = placed > 2 && (maxU - minU) > 1e-6 && (maxV - minV) > 1e-6;
         if (!gHasResult) {
             if (static_cast<int>(cut->edges.size()) > 12000) {
-                error = "割缝后的边数超过 12000，全纯 1-形式跳过了求解。换一个更小的模型。";
+                error = "割缝后的边数超过 12000, 全纯 1-形式跳过了求解. 换一个更小的模型.";
             } else {
                 error = "全纯 1-形式没有得到坐标。tree-cotree 割缝或周期约束没有给出可用的 1-形式。";
             }
@@ -454,7 +400,7 @@ void unfold() {
     gStatus = text.str();
 }
 
-float toolbarHeight() { return gShowExtra ? 118.f : 84.f; }
+float toolbarHeight() { return gShowExtra ? 132.f : 96.f; }
 
 Panel leftPanel() {
     const float gap = 8.f;
@@ -471,39 +417,8 @@ Panel rightPanel() {
 
 Mat4 modelViewProjection(const Panel& panel) {
     const float aspect = std::max(panel.w, 1.f) / std::max(panel.h, 1.f);
-    return multiply(perspective(0.9f, aspect, 0.01f, 100.f), lookAt(eyePosition(), gCenter));
-}
-
-void addButton(float& cursor, float y, float height, int id, const std::string& label, bool on) {
-    const TextImage image = rasterText(label, 15.f * gScale, true);
-    const float width = std::max(28.f, image.width / gScale + 16.f);
-    gButtons.push_back(Button{cursor, y, width, height, id, on, label});
-    cursor += width + 6.f;
-}
-
-void layoutButtons() {
-    gButtons.clear();
-    float cursor = 12.f;
-    const float y = 12.f;
-    const float height = 28.f;
-    addButton(cursor, y, height, 1, "<", false);
-    addButton(cursor, y, height, 0, gModels.empty() ? "没有模型" : gModels[gModel].label, false);
-    addButton(cursor, y, height, 2, ">", false);
-    cursor += 8.f;
-    addButton(cursor, y, height, 40, "展开", false);
-    addButton(cursor, y, height, 41, "清除", false);
-    addButton(cursor, y, height, 70, gShowExtra ? "收起 ▴" : "更多 ▾", gShowExtra);
-    gStatusX = 12.f;
-    gStatusY = gShowExtra ? 84.f : 52.f;
-    if (!gShowExtra) return;
-    cursor = 12.f;
-    const float row2 = 46.f;
-    addButton(cursor, row2, height, 50, "棋盘格", gTexture == Texture::Checker);
-    addButton(cursor, row2, height, 51, "共形畸变", gTexture == Texture::Distortion);
-    addButton(cursor, row2, height, 60, "生成树", gShowTree);
-    addButton(cursor, row2, height, 61, "余树", gShowCotree);
-    addButton(cursor, row2, height, 62, "同调边", gShowHomology);
-    addButton(cursor, row2, height, 63, "基本环", gShowCycles);
+    const float radius = std::max(gRadius, 0.2f);
+    return multiply(perspective(0.9f, aspect, radius * 0.02f, radius * 8.f), lookAt(eyePosition(), gCenter));
 }
 
 void recolorDistortion() {
@@ -530,7 +445,7 @@ void recolorDistortion() {
 void clickButton(int id) {
     if (id == 1) loadModel(gModel - 1);
     else if (id == 2) loadModel(gModel + 1);
-    else if (id == 40) unfold();
+    else if (id == 40) gUnfoldNow = true;
     else if (id == 41) {
         gHasResult = false;
         gSeconds = 0;
@@ -595,16 +510,6 @@ void main(){
     glAttachShader(gProgram, compileShader(GL_VERTEX_SHADER, vertexSource));
     glAttachShader(gProgram, compileShader(GL_FRAGMENT_SHADER, fragmentSource));
     glLinkProgram(gProgram);
-    const char* flatVertex = R"(#version 330 core
-layout(location=0) in vec2 aPos; layout(location=1) in vec2 aUv; uniform vec2 uScreen; out vec2 vUv;
-void main(){ vUv=aUv; gl_Position = vec4(aPos.x/uScreen.x*2.0-1.0, 1.0-aPos.y/uScreen.y*2.0, 0.0, 1.0); })";
-    const char* flatFragment = R"(#version 330 core
-uniform vec4 uColor; uniform sampler2D uTex; uniform int uTextured; in vec2 vUv; out vec4 frag;
-void main(){ vec4 sample = texture(uTex, vUv); frag = uTextured==1 ? sample : uColor; })";
-    gFlatProgram = glCreateProgram();
-    glAttachShader(gFlatProgram, compileShader(GL_VERTEX_SHADER, flatVertex));
-    glAttachShader(gFlatProgram, compileShader(GL_FRAGMENT_SHADER, flatFragment));
-    glLinkProgram(gFlatProgram);
     glGenVertexArrays(1, &gVao);
     glGenBuffers(1, &gBuffer);
 }
@@ -631,42 +536,6 @@ void drawMesh(const std::vector<DrawVertex>& vertices, const Mat4& mvp, int shad
     glDrawArrays(mode, 0, static_cast<GLsizei>(vertices.size()));
 }
 
-void fillRect(float x, float y, float w, float h, float r, float g, float b) {
-    const float data[] = {x, y, 0, 0, x + w, y, 1, 0, x + w, y + h, 1, 1, x, y, 0, 0, x + w, y + h, 1, 1, x, y + h, 0, 1};
-    glUseProgram(gFlatProgram);
-    glUniform2f(glGetUniformLocation(gFlatProgram, "uScreen"), static_cast<float>(gWidth), static_cast<float>(gHeight));
-    glUniform4f(glGetUniformLocation(gFlatProgram, "uColor"), r, g, b, 1);
-    glUniform1i(glGetUniformLocation(gFlatProgram, "uTextured"), 0);
-    glBindVertexArray(gVao);
-    glBindBuffer(GL_ARRAY_BUFFER, gBuffer);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(data), data, GL_DYNAMIC_DRAW);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 16, reinterpret_cast<void*>(0));
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 16, reinterpret_cast<void*>(8));
-    glDrawArrays(GL_TRIANGLES, 0, 6);
-}
-
-void drawLabel(const std::string& text, float x, float y) {
-    const TextImage image = rasterText(text, 15.f * gScale, true);
-    const float w = image.width / gScale, h = image.height / gScale;
-    const float data[] = {x, y, 0, 0, x + w, y, 1, 0, x + w, y + h, 1, 1, x, y, 0, 0, x + w, y + h, 1, 1, x, y + h, 0, 1};
-    glUseProgram(gFlatProgram);
-    glUniform2f(glGetUniformLocation(gFlatProgram, "uScreen"), static_cast<float>(gWidth), static_cast<float>(gHeight));
-    glUniform1i(glGetUniformLocation(gFlatProgram, "uTextured"), 1);
-    glUniform1i(glGetUniformLocation(gFlatProgram, "uTex"), 0);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, image.texture);
-    glBindVertexArray(gVao);
-    glBindBuffer(GL_ARRAY_BUFFER, gBuffer);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(data), data, GL_DYNAMIC_DRAW);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 16, reinterpret_cast<void*>(0));
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 16, reinterpret_cast<void*>(8));
-    glDrawArrays(GL_TRIANGLES, 0, 6);
-}
-
 Mat4 uvMatrix(const Panel& panel) {
     float minU = 0, minV = 0, maxU = 1, maxV = 1;
     if (!gUvTriangles.empty()) {
@@ -684,19 +553,62 @@ Mat4 uvMatrix(const Panel& panel) {
     return ortho(cx - span * aspect, cx + span * aspect, cy - span, cy + span);
 }
 
+bool toolButton(const char* label, bool on) {
+    if (on) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.70f, 0.82f, 0.95f, 1.f));
+    const bool pressed = ImGui::Button(label);
+    if (on) ImGui::PopStyleColor();
+    return pressed;
+}
+
+void drawInterface() {
+    imguiBegin();
+    ImGui::SetNextWindowPos(ImVec2(0.f, 0.f));
+    ImGui::SetNextWindowSize(ImVec2(static_cast<float>(gWidth), toolbarHeight()));
+    ImGui::Begin("工具", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
+    if (ImGui::Button("<")) clickButton(1);
+    ImGui::SameLine();
+    ImGui::TextUnformatted(gModels.empty() ? "没有模型" : gModels[gModel].label.c_str());
+    ImGui::SameLine();
+    if (ImGui::Button(">")) clickButton(2);
+    ImGui::SameLine();
+    if (ImGui::Button("展开")) clickButton(40);
+    ImGui::SameLine();
+    if (ImGui::Button("清除")) clickButton(41);
+    ImGui::SameLine();
+    if (ImGui::Button(gShowExtra ? "收起" : "更多")) clickButton(70);
+    if (gShowExtra) {
+        if (toolButton("棋盘格", gTexture == Texture::Checker)) clickButton(50);
+        ImGui::SameLine();
+        if (toolButton("共形畸变", gTexture == Texture::Distortion)) clickButton(51);
+        ImGui::SameLine();
+        if (toolButton("生成树", gShowTree)) clickButton(60);
+        ImGui::SameLine();
+        if (toolButton("余树", gShowCotree)) clickButton(61);
+        ImGui::SameLine();
+        if (toolButton("同调边", gShowHomology)) clickButton(62);
+        ImGui::SameLine();
+        if (toolButton("基本环", gShowCycles)) clickButton(63);
+    }
+    ImGui::TextWrapped("%s", gStatus.c_str());
+    ImGui::End();
+    const Panel left = leftPanel();
+    const Panel right = rightPanel();
+    ImDrawList* overlay = ImGui::GetForegroundDrawList();
+    overlay->PushClipRect(ImVec2(left.x, left.y), ImVec2(left.x + left.w - 8.f, left.y + 28.f), true);
+    overlay->AddText(ImVec2(left.x + 10.f, left.y + 8.f), IM_COL32(30, 34, 40, 255),
+                     "金生成树 · 青余树 · 绿同调边 · 品红基本环 · 粉红割缝");
+    overlay->PopClipRect();
+    overlay->PushClipRect(ImVec2(right.x, right.y), ImVec2(right.x + right.w - 8.f, right.y + 28.f), true);
+    overlay->AddText(ImVec2(right.x + 10.f, right.y + 8.f), IM_COL32(30, 34, 40, 255),
+                     gHasResult ? "UV" : "UV · 点展开");
+    overlay->PopClipRect();
+    imguiEnd();
+}
+
 void drawFrame() {
-    layoutButtons();
     glViewport(0, 0, static_cast<int>(gWidth * gScale), static_cast<int>(gHeight * gScale));
     glClearColor(0.93f, 0.94f, 0.95f, 1.f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    glDisable(GL_DEPTH_TEST);
-    fillRect(0, 0, static_cast<float>(gWidth), toolbarHeight(), 0.97f, 0.97f, 0.98f);
-    for (const Button& button : gButtons) {
-        fillRect(button.x, button.y, button.w, button.h, button.on ? 0.78f : 0.88f, button.on ? 0.86f : 0.89f, button.on ? 0.95f : 0.91f);
-        drawLabel(button.label, button.x + 8.f, button.y + 5.f);
-    }
-    drawLabel(gStatus, gStatusX, gStatusY);
-
     glEnable(GL_DEPTH_TEST);
     const Panel left = leftPanel();
     const Panel right = rightPanel();
@@ -732,20 +644,15 @@ void drawFrame() {
     glDisable(GL_SCISSOR_TEST);
     glDisable(GL_DEPTH_TEST);
     glViewport(0, 0, static_cast<int>(gWidth * gScale), static_cast<int>(gHeight * gScale));
-    drawLabel("金生成树 · 青余树 · 绿同调边 · 品红基本环 · 粉红割缝", left.x + 10.f, left.y + 8.f);
-    drawLabel(gHasResult ? "UV" : "UV · 点展开", right.x + 10.f, right.y + 8.f);
+    drawInterface();
 }
 
-void mouseButton(GLFWwindow*, int button, int action, int) {
+void mouseButton(GLFWwindow* window, int button, int action, int mods) {
+    imguiMouseButton(window, button, action, mods);
     if (button != GLFW_MOUSE_BUTTON_LEFT) return;
     if (action == GLFW_RELEASE) { gDrag = false; return; }
-    glfwGetCursorPos(glfwGetCurrentContext(), &gLastX, &gLastY);
-    for (const Button& item : gButtons) {
-        if (gLastX >= item.x && gLastX <= item.x + item.w && gLastY >= item.y && gLastY <= item.y + item.h) {
-            clickButton(item.id);
-            return;
-        }
-    }
+    if (imguiCapturesMouse()) return;
+    glfwGetCursorPos(window, &gLastX, &gLastY);
     const Panel left = leftPanel();
     const Panel right = rightPanel();
     if (gLastX >= left.x && gLastX <= left.x + left.w && gLastY >= left.y && gLastY <= left.y + left.h) {
@@ -768,14 +675,16 @@ void cursor(GLFWwindow*, double x, double y) {
     }
 }
 
-void scroll(GLFWwindow*, double, double yoff) {
+void scroll(GLFWwindow* window, double, double yoff) {
+    imguiScroll(window, 0, yoff);
+    if (imguiCapturesMouse()) return;
     double x = 0, y = 0;
     glfwGetCursorPos(glfwGetCurrentContext(), &x, &y);
     const Panel right = rightPanel();
     if (x >= right.x && x <= right.x + right.w && y >= right.y && y <= right.y + right.h) {
         gUvZoom = std::clamp(gUvZoom * (yoff > 0 ? 1.1f : 0.9f), 0.2f, 40.f);
     } else {
-        gRadius = std::clamp(gRadius * (yoff > 0 ? 0.9f : 1.1f), 0.2f, 40.f);
+        gRadius = std::clamp(gRadius * (yoff > 0 ? 0.9f : 1.1f), 0.2f, 400.f);
     }
 }
 
@@ -805,8 +714,11 @@ int main(int argc, char** argv) {
     glfwSetMouseButtonCallback(window, mouseButton);
     glfwSetCursorPosCallback(window, cursor);
     glfwSetScrollCallback(window, scroll);
+    glfwSetKeyCallback(window, imguiKey);
+    glfwSetCharCallback(window, imguiChar);
     glfwSwapInterval(1);
     setupGL();
+    imguiInit(window);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     if (!gModels.empty()) loadModel(0);
@@ -821,10 +733,14 @@ int main(int argc, char** argv) {
         glfwPollEvents();
         if (gAutoRun) {
             gAutoRun = false;
-            // 首屏先画出模型与割缝，再自动展开一次，打开就能看到结果。
             if (!gModels.empty()) unfold();
         }
+        if (gUnfoldNow) {
+            gUnfoldNow = false;
+            unfold();
+        }
     }
+    imguiShutdown();
     glfwDestroyWindow(window);
     glfwTerminate();
     return 0;

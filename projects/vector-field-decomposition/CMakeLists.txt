@@ -69,39 +69,88 @@ else()
   message( FATAL_ERROR "Unrecognized compiler [${CMAKE_CXX_COMPILER_ID}]" )
 endif()
 
-# Edit files to build here.
-set(SRCS 
-  src/main.cpp
-  src/tree-cotree.cpp
-  src/harmonic-bases.cpp
-  src/hodge-decomposition.cpp
-  ../poisson-problem/src/scalar-poisson-problem.cpp
-  ../../utils/src/solvers.cpp
-)
-
-set(TEST_SRCS
-  src/tree-cotree.cpp
-  src/harmonic-bases.cpp
-  src/hodge-decomposition.cpp
-  ../../utils/src/solvers.cpp
-  src/test-decomp.cpp
-)
-
 add_subdirectory(../../deps/geometry-central deps/geometry-central)
 add_subdirectory(../../deps/polyscope deps/polyscope)
 add_subdirectory(../../deps/googletest deps/googletest)
+set_property(TARGET geometry-central PROPERTY CXX_STANDARD 17)
 
-# Change the executable name by changing "main" in the lines below.
+set(PARAM_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../conformal-parameterization")
+set(MODEL_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../principal-curvature-field/src")
+set(MESH_CORE
+  "${PARAM_ROOT}/QuadMeshing/GlobalFieldsParam/GlobalFieldsParameterization.cpp"
+  "${PARAM_ROOT}/Parameterization/Parameterization.cpp"
+  "${PARAM_ROOT}/VectorFileds/PrincipalCurvatureFields/PrincipalCurvatureField.cpp"
+  "${PARAM_ROOT}/BaseMesh/Mesh.cpp"
+  "${PARAM_ROOT}/BaseMesh/MeshIO.cpp"
+  "${PARAM_ROOT}/BaseMesh/Vertex.cpp"
+  "${PARAM_ROOT}/BaseMesh/Edge.cpp"
+  "${PARAM_ROOT}/BaseMesh/Face.cpp"
+  "${PARAM_ROOT}/BaseMesh/HalfEdge.cpp"
+  "${PARAM_ROOT}/BaseMesh/QcError.cpp"
+)
+
+# Edit files to build here.
+set(SRCS
+  src/main.cpp
+  src/hodge.cpp
+  src/vector_field_lab.cpp
+  src/tree-cotree.cpp
+  src/harmonic-bases.cpp
+  src/hodge-decomposition.cpp
+  src/trivial-connections.cpp
+  "${MODEL_SRC}/models.cpp"
+  ../../utils/src/solvers.cpp
+  ${MESH_CORE}
+  "${PARAM_ROOT}/VectorFileds/NRosyVectorFields.cpp"
+  "${PARAM_ROOT}/VectorFileds/ComplexPolyField/ComplexPolyField.cpp"
+)
+
+set(DECOMP_SRCS
+  src/tree-cotree.cpp
+  src/harmonic-bases.cpp
+  src/hodge-decomposition.cpp
+  ../../utils/src/solvers.cpp
+)
+
 add_executable(main "${SRCS}")
 set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT main)
-target_include_directories(main PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include/")
-target_include_directories(main PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/../../utils/include")
-target_include_directories(main PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/../poisson-problem/include")
-# add the args.hxx project which we use for command line args
-target_include_directories(main PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/../../deps/polyscope/deps/args")
+target_include_directories(main PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/include"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../Tree-Cotree"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../utils/include"
+  "${MODEL_SRC}"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../deps/polyscope/deps/args"
+  "${PARAM_ROOT}/BaseMesh"
+  "${PARAM_ROOT}/Parameterization"
+  "${PARAM_ROOT}/QuadMeshing/GlobalFieldsParam"
+  "${PARAM_ROOT}/VectorFileds/PrincipalCurvatureFields"
+  "${PARAM_ROOT}/VectorFileds"
+  "${PARAM_ROOT}/VectorFileds/ComplexPolyField"
+  "${PARAM_ROOT}/Solvers"
+  "${PARAM_ROOT}/QuadMeshing"
+  "/opt/homebrew/include/eigen3"
+)
 target_link_libraries(main geometry-central polyscope)
 
-add_executable(test-decomp "${TEST_SRCS}")
-target_include_directories(test-decomp PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include/")
-target_include_directories(test-decomp PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/../../utils/include")
-target_link_libraries(test-decomp geometry-central polyscope gtest)
+add_executable(test-decomp src/test-decomp.cpp ${DECOMP_SRCS})
+target_include_directories(test-decomp PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/include"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../Tree-Cotree"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../utils/include"
+)
+target_compile_definitions(test-decomp PRIVATE
+  "DECOMP_SOLN_PATH=\"${CMAKE_CURRENT_SOURCE_DIR}/include/test-decomp-soln.txt\""
+)
+target_link_libraries(test-decomp geometry-central gtest)
+
+add_executable(test-connect src/test-connect.cpp src/trivial-connections.cpp ${DECOMP_SRCS})
+target_include_directories(test-connect PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/include"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../Tree-Cotree"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../utils/include"
+)
+target_compile_definitions(test-connect PRIVATE
+  "CONNECT_SOLN_PATH=\"${CMAKE_CURRENT_SOURCE_DIR}/include/test-connect-soln.txt\""
+  "CONNECT_SPHERE_PATH=\"${CMAKE_CURRENT_SOURCE_DIR}/include/test-connect-sphere.txt\""
+)
+target_link_libraries(test-connect geometry-central gtest)

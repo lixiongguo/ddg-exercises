@@ -33,4 +33,8 @@ class TreeCotree {
     Halfedge sharedHalfedge(Face f, Face g) const;
 
     void buildGenerators();
+
+  private:
+    void build();
+    bool built_ = false;
 };

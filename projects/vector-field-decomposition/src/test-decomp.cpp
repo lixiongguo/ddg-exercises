@@ -32,7 +32,11 @@ class HodgeDecompositionTest : public ::testing::Test {
         std::vector<double> deltaBeta;
         std::vector<double> gamma;
 
+#ifdef DECOMP_SOLN_PATH
+        std::string filepath = DECOMP_SOLN_PATH;
+#else
         std::string filepath = "../include/test-decomp-soln.txt";
+#endif
         std::ifstream input_file(filepath);
         std::string line;
         std::string X;

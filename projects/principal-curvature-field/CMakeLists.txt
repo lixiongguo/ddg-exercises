@@ -47,6 +47,26 @@ add_subdirectory(../../deps/polyscope deps/polyscope)
 set_property(TARGET geometry-central PROPERTY CXX_STANDARD 17)
 
 set(PARAM_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../conformal-parameterization")
+set(PARAM_UI "${PARAM_ROOT}/ParamUI")
+set(IMGUI_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../deps/polyscope/deps/imgui/imgui")
+set(IMGUI_SRCS
+  "${IMGUI_ROOT}/imgui.cpp"
+  "${IMGUI_ROOT}/imgui_draw.cpp"
+  "${IMGUI_ROOT}/imgui_widgets.cpp"
+  "${IMGUI_ROOT}/examples/imgui_impl_glfw.cpp"
+  "${IMGUI_ROOT}/examples/imgui_impl_opengl3.cpp"
+  "${PARAM_UI}/imgui_chrome.cpp"
+)
+
+function(link_imgui target)
+  target_sources(${target} PRIVATE ${IMGUI_SRCS})
+  target_include_directories(${target} PRIVATE
+    "${IMGUI_ROOT}"
+    "${IMGUI_ROOT}/examples"
+    "${PARAM_UI}"
+  )
+  target_compile_definitions(${target} PRIVATE "IMGUI_IMPL_OPENGL_LOADER_CUSTOM=\"param_gl.h\"")
+endfunction()
 set(BD_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../libIGL_deform/Libigl-Discrete-Geometry/Bounded/bounded_distortion_mapping")
 set(MESH_CORE
   "${PARAM_ROOT}/QuadMeshing/GlobalFieldsParam/GlobalFieldsParameterization.cpp"
@@ -77,16 +97,6 @@ function(link_viewer target)
   target_link_libraries(${target} geometry-central polyscope)
 endfunction()
 
-add_executable(main
-  src/main.cpp
-  src/hodge.cpp
-  src/models.cpp
-  ${MESH_CORE}
-  "${PARAM_ROOT}/VectorFileds/NRosyVectorFields.cpp"
-  "${PARAM_ROOT}/VectorFileds/ComplexPolyField/ComplexPolyField.cpp"
-)
-link_viewer(main)
-
 add_executable(quad_test
   src/quad_test.cpp
   src/geogram_quadcover.cpp
@@ -114,11 +124,8 @@ endif()
 target_include_directories(quad_test PRIVATE "${GEOGRAM_INCLUDE_DIR}")
 target_link_libraries(quad_test "${GEOGRAM_LIBRARY}")
 
-enable_language(OBJCXX)
-set(CMAKE_OBJCXX_STANDARD 17)
-
 add_executable(simple_param
-  ../simple-param/src/main.mm
+  "${PARAM_UI}/simple-param/src/main.cpp"
   "${PARAM_ROOT}/Parameterization/Parameterization.cpp"
   "${PARAM_ROOT}/Parameterization/SimpleParam/LSCM/Lscm.cpp"
   "${PARAM_ROOT}/Parameterization/SimpleParam/LSCM/Scp.cpp"
@@ -148,8 +155,9 @@ target_include_directories(simple_param PRIVATE
   "${PARAM_ROOT}/CutSeamMesh"
   "/opt/homebrew/include/eigen3"
 )
-target_compile_options(simple_param PRIVATE "-fobjc-arc" "-std=c++17")
-target_link_libraries(simple_param glfw "-framework OpenGL" "-framework Cocoa" "-framework CoreText")
+target_compile_options(simple_param PRIVATE "-std=c++17")
+link_imgui(simple_param)
+target_link_libraries(simple_param glfw "-framework OpenGL")
 
 set(OSQP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../deps/osqp")
 set(UNITTESTS OFF CACHE BOOL "OSQP unit tests" FORCE)
@@ -157,7 +165,7 @@ set(ENABLE_MKL_PARDISO OFF CACHE BOOL "OSQP MKL Pardiso" FORCE)
 add_subdirectory(${OSQP_ROOT} deps/osqp)
 
 add_executable(cone_unwrap
-  ../cone-unwrap/src/main.mm
+  "${PARAM_UI}/cone-unwrap/src/main.cpp"
   src/models.cpp
   "${PARAM_ROOT}/Parameterization/Parameterization.cpp"
   "${PARAM_ROOT}/Parameterization/ConeParam/ConeParameterization.cpp"
@@ -191,15 +199,15 @@ target_include_directories(cone_unwrap PRIVATE
   "/opt/homebrew/include/eigen3"
 )
 target_compile_definitions(cone_unwrap PRIVATE CONE_USE_OSQP)
-set_source_files_properties(../cone-unwrap/src/main.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
-target_link_libraries(cone_unwrap osqpstatic glfw "-framework OpenGL" "-framework Cocoa" "-framework CoreText")
+link_imgui(cone_unwrap)
+target_link_libraries(cone_unwrap osqpstatic glfw "-framework OpenGL")
 
 add_executable(hof_unwrap
-  ../hof-unwrap/src/main.mm
+  ../HoloOneForm/main.cpp
+  ../HoloOneForm/HolomorphicOneForm.cpp
   src/models.cpp
   "${PARAM_ROOT}/Parameterization/Parameterization.cpp"
-  "${PARAM_ROOT}/Parameterization/CutSeamParam/CutSeamParameterization.cpp"
-  "${PARAM_ROOT}/Parameterization/CutSeamParam/HoloOneForm/HolomorphicOneForm.cpp"
+  "${PARAM_ROOT}/Parameterization/CutSeamParameterization.cpp"
   "${PARAM_ROOT}/CutSeamMesh/CutSeamMesh.cpp"
   "${PARAM_ROOT}/BaseMesh/Mesh.cpp"
   "${PARAM_ROOT}/BaseMesh/MeshIO.cpp"
@@ -210,13 +218,13 @@ add_executable(hof_unwrap
   "${PARAM_ROOT}/BaseMesh/QcError.cpp"
 )
 target_include_directories(hof_unwrap PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/../HoloOneForm"
   "${CMAKE_CURRENT_SOURCE_DIR}/src"
   "${PARAM_ROOT}/BaseMesh"
   "${PARAM_ROOT}/Parameterization"
   "${PARAM_ROOT}/Parameterization/CutSeamParam"
-  "${PARAM_ROOT}/Parameterization/CutSeamParam/HoloOneForm"
   "${PARAM_ROOT}/CutSeamMesh"
   "/opt/homebrew/include/eigen3"
 )
-set_source_files_properties(../hof-unwrap/src/main.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
-target_link_libraries(hof_unwrap glfw "-framework OpenGL" "-framework Cocoa" "-framework CoreText")
+link_imgui(hof_unwrap)
+target_link_libraries(hof_unwrap glfw "-framework OpenGL")

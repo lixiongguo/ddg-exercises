@@ -41,9 +41,7 @@ namespace surface {
  * Returns: A sparse diagonal matrix representing the Hodge operator that can be applied to discrete 0-forms.
  */
 SparseMatrix<double> VertexPositionGeometry::buildHodgeStar0Form() const {
-
-    // TODO
-    return identityMatrix<double>(1); // placeholder
+    return identityMatrix<double>(mesh.nVertices());
 }
 
 /*
@@ -53,9 +51,14 @@ SparseMatrix<double> VertexPositionGeometry::buildHodgeStar0Form() const {
  * Returns: A sparse diagonal matrix representing the Hodge operator that can be applied to discrete 1-forms.
  */
 SparseMatrix<double> VertexPositionGeometry::buildHodgeStar1Form() const {
-
-    // TODO
-    return identityMatrix<double>(1); // placeholder
+    SparseMatrix<double> star(mesh.nEdges(), mesh.nEdges());
+    std::vector<Eigen::Triplet<double>> triplets;
+    triplets.reserve(mesh.nEdges());
+    for (Edge edge : mesh.edges()) {
+        triplets.emplace_back(edge.getIndex(), edge.getIndex(), edgeCotanWeight(edge));
+    }
+    star.setFromTriplets(triplets.begin(), triplets.end());
+    return star;
 }
 
 /*
@@ -65,9 +68,15 @@ SparseMatrix<double> VertexPositionGeometry::buildHodgeStar1Form() const {
  * Returns: A sparse diagonal matrix representing the Hodge operator that can be applied to discrete 2-forms.
  */
 SparseMatrix<double> VertexPositionGeometry::buildHodgeStar2Form() const {
-
-    // TODO
-    return identityMatrix<double>(1); // placeholder
+    SparseMatrix<double> star(mesh.nFaces(), mesh.nFaces());
+    std::vector<Eigen::Triplet<double>> triplets;
+    triplets.reserve(mesh.nFaces());
+    for (Face face : mesh.faces()) {
+        const double area = faceArea(face);
+        triplets.emplace_back(face.getIndex(), face.getIndex(), area > 0.0 ? 1.0 / area : 0.0);
+    }
+    star.setFromTriplets(triplets.begin(), triplets.end());
+    return star;
 }
 
 /*
@@ -77,9 +86,17 @@ SparseMatrix<double> VertexPositionGeometry::buildHodgeStar2Form() const {
  * Returns: A sparse matrix representing the exterior derivative that can be applied to discrete 0-forms.
  */
 SparseMatrix<double> VertexPositionGeometry::buildExteriorDerivative0Form() const {
-
-    // TODO
-    return identityMatrix<double>(1); // placeholder
+    SparseMatrix<double> derivative(mesh.nEdges(), mesh.nVertices());
+    std::vector<Eigen::Triplet<double>> triplets;
+    triplets.reserve(mesh.nEdges() * 2);
+    for (Edge edge : mesh.edges()) {
+        const Halfedge he = edge.halfedge();
+        const size_t index = edge.getIndex();
+        triplets.emplace_back(index, he.tipVertex().getIndex(), 1.0);
+        triplets.emplace_back(index, he.tailVertex().getIndex(), -1.0);
+    }
+    derivative.setFromTriplets(triplets.begin(), triplets.end());
+    return derivative;
 }
 
 /*
@@ -89,9 +106,17 @@ SparseMatrix<double> VertexPositionGeometry::buildExteriorDerivative0Form() cons
  * Returns: A sparse matrix representing the exterior derivative that can be applied to discrete 1-forms.
  */
 SparseMatrix<double> VertexPositionGeometry::buildExteriorDerivative1Form() const {
-
-    // TODO
-    return identityMatrix<double>(1); // placeholder
+    SparseMatrix<double> derivative(mesh.nFaces(), mesh.nEdges());
+    std::vector<Eigen::Triplet<double>> triplets;
+    triplets.reserve(mesh.nFaces() * 3);
+    for (Face face : mesh.faces()) {
+        for (Halfedge he : face.adjacentHalfedges()) {
+            const double sign = (he == he.edge().halfedge()) ? 1.0 : -1.0;
+            triplets.emplace_back(face.getIndex(), he.edge().getIndex(), sign);
+        }
+    }
+    derivative.setFromTriplets(triplets.begin(), triplets.end());
+    return derivative;
 }
 
 } // namespace surface

@@ -26,7 +26,11 @@ class TrivialConnectionsTest : public ::testing::Test {
     Vector<double> u;
 
     TrivialConnectionsTest() {
+#ifdef CONNECT_SOLN_PATH
+        intializeSolution(CONNECT_SOLN_PATH);
+#else
         intializeSolution("../include/test-connect-soln.txt");
+#endif
     }
 
     void intializeSolution(std::string filepath) {
@@ -143,7 +147,11 @@ class TrivialConnectionsSphereTest : public TrivialConnectionsTest {
 
   protected:
     TrivialConnectionsSphereTest() {
+#ifdef CONNECT_SPHERE_PATH
+        intializeSolution(CONNECT_SPHERE_PATH);
+#else
         intializeSolution("../include/test-connect-sphere.txt");
+#endif
     }
 
     ~TrivialConnectionsSphereTest() {
