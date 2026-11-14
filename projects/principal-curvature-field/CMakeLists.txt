@@ -47,8 +47,9 @@ add_subdirectory(../../deps/polyscope deps/polyscope)
 set_property(TARGET geometry-central PROPERTY CXX_STANDARD 17)
 
 set(PARAM_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../conformal-parameterization")
+set(BD_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../libIGL_deform/Libigl-Discrete-Geometry/Bounded/bounded_distortion_mapping")
 set(MESH_CORE
-  "${PARAM_ROOT}/Parameterization/GlobalFieldsParam/GlobalFieldsParameterization.cpp"
+  "${PARAM_ROOT}/QuadMeshing/GlobalFieldsParam/GlobalFieldsParameterization.cpp"
   "${PARAM_ROOT}/Parameterization/Parameterization.cpp"
   "${PARAM_ROOT}/VectorFileds/PrincipalCurvatureFields/PrincipalCurvatureField.cpp"
   "${PARAM_ROOT}/BaseMesh/Mesh.cpp"
@@ -65,7 +66,7 @@ function(link_viewer target)
     "${CMAKE_CURRENT_SOURCE_DIR}/../../deps/polyscope/deps/args"
     "${PARAM_ROOT}/BaseMesh"
     "${PARAM_ROOT}/Parameterization"
-    "${PARAM_ROOT}/Parameterization/GlobalFieldsParam"
+    "${PARAM_ROOT}/QuadMeshing/GlobalFieldsParam"
     "${PARAM_ROOT}/VectorFileds/PrincipalCurvatureFields"
     "${PARAM_ROOT}/VectorFileds"
     "${PARAM_ROOT}/VectorFileds/ComplexPolyField"
@@ -91,8 +92,8 @@ add_executable(quad_test
   src/geogram_quadcover.cpp
   src/models.cpp
   ${MESH_CORE}
-  "${PARAM_ROOT}/Parameterization/GlobalFieldsParam/MIQQuad.cpp"
-  "${PARAM_ROOT}/Parameterization/GlobalFieldsParam/QuadCover.cpp"
+  "${PARAM_ROOT}/QuadMeshing/GlobalFieldsParam/MIQQuad.cpp"
+  "${PARAM_ROOT}/QuadMeshing/GlobalFieldsParam/QuadCover.cpp"
   "${PARAM_ROOT}/Solvers/MixedIntegerProgram.cpp"
   "${PARAM_ROOT}/QuadMeshing/NaiveQuadMerge.cpp"
 )
@@ -126,7 +127,7 @@ add_executable(simple_param
   "${PARAM_ROOT}/Parameterization/SimpleParam/ABF/AbfPlusPlus.cpp"
   "${PARAM_ROOT}/Parameterization/SimpleParam/ABF/LinAbf.cpp"
   "${PARAM_ROOT}/Solvers/AugmentedLagrangian.cpp"
-  "${PARAM_ROOT}/Bounded/bounded_distortion_mapping/BoundedDistortionMapping.cpp"
+  "${BD_ROOT}/BoundedDistortionMapping.cpp"
   "${PARAM_ROOT}/BaseMesh/Mesh.cpp"
   "${PARAM_ROOT}/BaseMesh/MeshIO.cpp"
   "${PARAM_ROOT}/BaseMesh/Vertex.cpp"
@@ -143,7 +144,7 @@ target_include_directories(simple_param PRIVATE
   "${PARAM_ROOT}/Parameterization/SimpleParam/LSCM"
   "${PARAM_ROOT}/Parameterization/SimpleParam/ARAP"
   "${PARAM_ROOT}/Parameterization/SimpleParam/ABF"
-  "${PARAM_ROOT}/Bounded/bounded_distortion_mapping"
+  "${BD_ROOT}"
   "${PARAM_ROOT}/CutSeamMesh"
   "/opt/homebrew/include/eigen3"
 )
