@@ -205,6 +205,8 @@ target_link_libraries(cone_unwrap osqpstatic glfw "-framework OpenGL")
 add_executable(hof_unwrap
   ../HoloOneForm/main.cpp
   ../HoloOneForm/HolomorphicOneForm.cpp
+  ../Abel_Jacoi/AbelJacobi.cpp
+  ../Abel_Jacoi/AbelJacobiParameterization.cpp
   src/models.cpp
   "${PARAM_ROOT}/Parameterization/Parameterization.cpp"
   "${PARAM_ROOT}/Parameterization/CutSeamParameterization.cpp"
@@ -219,6 +221,7 @@ add_executable(hof_unwrap
 )
 target_include_directories(hof_unwrap PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/../HoloOneForm"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../Abel_Jacoi"
   "${CMAKE_CURRENT_SOURCE_DIR}/src"
   "${PARAM_ROOT}/BaseMesh"
   "${PARAM_ROOT}/Parameterization"
@@ -228,3 +231,27 @@ target_include_directories(hof_unwrap PRIVATE
 )
 link_imgui(hof_unwrap)
 target_link_libraries(hof_unwrap glfw "-framework OpenGL")
+
+add_executable(abel_jacobi
+  ../Abel_Jacoi/abel_jacobi_demo.cpp
+  ../Abel_Jacoi/AbelJacobi.cpp
+  ../Abel_Jacoi/AbelJacobiParameterization.cpp
+  "${PARAM_ROOT}/Parameterization/Parameterization.cpp"
+  "${PARAM_ROOT}/Parameterization/CutSeamParameterization.cpp"
+  "${PARAM_ROOT}/CutSeamMesh/CutSeamMesh.cpp"
+  "${PARAM_ROOT}/BaseMesh/Mesh.cpp"
+  "${PARAM_ROOT}/BaseMesh/MeshIO.cpp"
+  "${PARAM_ROOT}/BaseMesh/Vertex.cpp"
+  "${PARAM_ROOT}/BaseMesh/Edge.cpp"
+  "${PARAM_ROOT}/BaseMesh/Face.cpp"
+  "${PARAM_ROOT}/BaseMesh/HalfEdge.cpp"
+  "${PARAM_ROOT}/BaseMesh/QcError.cpp"
+)
+target_include_directories(abel_jacobi PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/../Abel_Jacoi"
+  "${PARAM_ROOT}/BaseMesh"
+  "${PARAM_ROOT}/Parameterization"
+  "${PARAM_ROOT}/Parameterization/CutSeamParam"
+  "${PARAM_ROOT}/CutSeamMesh"
+  "/opt/homebrew/include/eigen3"
+)

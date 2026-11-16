@@ -3,6 +3,7 @@
 
 #include "CutSeamParameterization.h"
 #include "AbelJacobi.h"
+#include <Eigen/Dense>
 #include <vector>
 
 /**
@@ -22,6 +23,16 @@ public:
 
     const AbelJacobi& engine() const { return aj_; }
     AbelJacobi& engine() { return aj_; }
+
+    /**
+     * Quad mesh of φ_1: real part, plus the 90° rotation of its gradient as the
+     * conjugate. `points` holds line endpoints in consecutive pairs.
+     * Optional triangle buffers are the same mesh, colored by quad-cell parity.
+     */
+    bool buildQuadLines(std::vector<Eigen::Vector3d>& points,
+                        std::vector<Eigen::Vector3d>* trianglePositions = nullptr,
+                        std::vector<Eigen::Vector3d>* triangleColors = nullptr,
+                        int* cellCount = nullptr);
 
 private:
     AbelJacobi aj_;

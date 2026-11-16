@@ -6,6 +6,7 @@
 #include "imgui.h"
 #include "imgui_chrome.h"
 
+#include "AbelJacobiParameterization.h"
 #include "HolomorphicOneForm.h"
 #include "Mesh.h"
 #include "QcError.h"
@@ -53,6 +54,9 @@ bool gShowTree = false;
 bool gShowCotree = false;
 bool gShowHomology = false;
 bool gShowCycles = false;
+bool gShowQuads = false;
+bool gHasQuads = false;
+bool gQuadNow = false;
 bool gDrag = false;
 int gDragPanel = -1;
 double gLastX = 0, gLastY = 0;
@@ -68,7 +72,7 @@ int gWidth = 1440, gHeight = 860;
 float gScale = 1.f;
 bool gUnfoldNow = false;
 std::vector<DrawVertex> gTriangles, gUvTriangles, gFlipTris, gFlips3d, gSeamLines;
-std::vector<DrawVertex> gTreeLines, gCotreeLines, gHomologyLines, gCycleLines;
+std::vector<DrawVertex> gTreeLines, gCotreeLines, gHomologyLines, gCycleLines, gQuadLines, gQuadFaces;
 
 GLuint gProgram = 0, gVao = 0, gBuffer = 0;
 
@@ -148,14 +152,29 @@ void fitCamera() {
     if (gRadius < 0.2f) gRadius = 2.f;
 }
 
-int meshGenus() {
+int genusOf(const Mesh& mesh) {
     int faces = 0;
-    for (FaceCIter face = gMesh.faces.begin(); face != gMesh.faces.end(); ++face) {
+    for (FaceCIter face = mesh.faces.begin(); face != mesh.faces.end(); ++face) {
         if (!face->isBoundary()) ++faces;
     }
-    const int chi = static_cast<int>(gMesh.vertices.size()) - static_cast<int>(gMesh.edges.size()) + faces;
-    if (!gMesh.boundaries.empty()) return 0;
+    const int chi = static_cast<int>(mesh.vertices.size()) - static_cast<int>(mesh.edges.size()) + faces;
+    if (!mesh.boundaries.empty()) return 0;
     return std::max(0, (2 - chi) / 2);
+}
+
+int meshGenus() {
+    return genusOf(gMesh);
+}
+
+void keepPositiveGenus(std::vector<ModelFile>& models) {
+    std::vector<ModelFile> kept;
+    kept.reserve(models.size());
+    Mesh mesh;
+    for (const ModelFile& model : models) {
+        if (!mesh.read(model.path.string())) continue;
+        if (genusOf(mesh) > 0) kept.push_back(model);
+    }
+    models.swap(kept);
 }
 
 void pushVertex(std::vector<DrawVertex>& target, const Eigen::Vector3d& p, const Eigen::Vector3d& n,
@@ -335,6 +354,10 @@ void loadModel(int index) {
     gModel = (index % static_cast<int>(gModels.size()) + static_cast<int>(gModels.size())) % static_cast<int>(gModels.size());
     gMesh.read(gModels[gModel].path.string());
     gHasResult = false;
+    gShowQuads = false;
+    gHasQuads = false;
+    gQuadLines.clear();
+    gQuadFaces.clear();
     clearTreeCotreeView();
     gSeconds = 0;
     gFlips = 0;
@@ -372,7 +395,9 @@ void unfold() {
         }
         gHasResult = placed > 2 && (maxU - minU) > 1e-6 && (maxV - minV) > 1e-6;
         if (!gHasResult) {
-            if (static_cast<int>(cut->edges.size()) > 12000) {
+            if (gGenus <= 0) {
+                error = "亏格为 0, 没有非平凡的全纯 1-形式.";
+            } else if (cut && static_cast<int>(cut->edges.size()) > 12000) {
                 error = "割缝后的边数超过 12000, 全纯 1-形式跳过了求解. 换一个更小的模型.";
             } else {
                 error = "全纯 1-形式没有得到坐标。tree-cotree 割缝或周期约束没有给出可用的 1-形式。";
@@ -400,7 +425,21 @@ void unfold() {
     gStatus = text.str();
 }
 
-float toolbarHeight() { return gShowExtra ? 132.f : 96.f; }
+float uiScale() {
+    float x = 1.f, y = 1.f;
+    if (GLFWwindow* window = glfwGetCurrentContext()) glfwGetWindowContentScale(window, &x, &y);
+    return std::max(1.f, 0.5f * (x + y));
+}
+
+float toolbarHeight() {
+    const float font = 16.f;
+    const float button = font + 12.f;
+    const float pad = 12.f;
+    const float gap = 8.f;
+    float height = pad + button + gap + font + pad;
+    if (gShowExtra) height += gap + button;
+    return height;
+}
 
 Panel leftPanel() {
     const float gap = 8.f;
@@ -448,12 +487,24 @@ void clickButton(int id) {
     else if (id == 40) gUnfoldNow = true;
     else if (id == 41) {
         gHasResult = false;
+        gShowQuads = false;
+        gHasQuads = false;
+        gQuadLines.clear();
+        gQuadFaces.clear();
         gSeconds = 0;
         gFlips = 0;
         gSeams = 0;
         clearTreeCotreeView();
         gStatus = "已清除展开结果。点「展开」再算全纯 1-形式。";
         rebuildGeometry();
+    }     else if (id == 42) {
+        if (gHasQuads) {
+            gShowQuads = !gShowQuads;
+            gStatus = gShowQuads ? "四边形网格已显示。" : "四边形网格已隐藏。";
+        } else {
+            gStatus = "正在用 Abel-Jacobi 提取四边形网格…";
+            gQuadNow = true;
+        }
     } else if (id == 70) {
         gShowExtra = !gShowExtra;
     } else if (id == 50) {
@@ -553,61 +604,152 @@ Mat4 uvMatrix(const Panel& panel) {
     return ortho(cx - span * aspect, cx + span * aspect, cy - span, cy + span);
 }
 
-bool toolButton(const char* label, bool on) {
-    if (on) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.70f, 0.82f, 0.95f, 1.f));
+std::string modelTitle() {
+    if (gModels.empty()) return "没有模型";
+    std::string label = gModels[gModel].label;
+    const auto dot = label.rfind(".obj");
+    if (dot != std::string::npos) label.erase(dot, 4);
+    return label;
+}
+
+std::string fitText(const std::string& text, float maxWidth) {
+    if (ImGui::CalcTextSize(text.c_str()).x <= maxWidth) return text;
+    std::string cut = text;
+    const std::string ellipsis = "…";
+    while (!cut.empty() && ImGui::CalcTextSize((cut + ellipsis).c_str()).x > maxWidth) {
+        cut.pop_back();
+        while (!cut.empty() && (static_cast<unsigned char>(cut.back()) & 0xC0) == 0x80) cut.pop_back();
+    }
+    return cut + ellipsis;
+}
+
+bool darkButton(const char* label) {
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.18f, 0.22f, 1.f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.24f, 0.28f, 0.33f, 1.f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.09f, 0.11f, 0.14f, 1.f));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.98f, 0.98f, 0.96f, 1.f));
     const bool pressed = ImGui::Button(label);
-    if (on) ImGui::PopStyleColor();
+    ImGui::PopStyleColor(4);
     return pressed;
+}
+
+bool toggleButton(const char* label, bool on) {
+    return on ? darkButton(label) : ImGui::Button(label);
+}
+
+bool swatchButton(const char* label, bool on, ImVec4 swatch) {
+    const ImVec2 text = ImGui::CalcTextSize(label);
+    const float padX = 11.f;
+    const float padY = 6.f;
+    const float dot = 8.f;
+    const ImVec2 size(padX + dot + 7.f + text.x + padX, text.y + padY * 2.f);
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    const bool pressed = ImGui::InvisibleButton(label, size);
+    const bool hover = ImGui::IsItemHovered();
+    const int red = static_cast<int>(swatch.x * 255.f);
+    const int green = static_cast<int>(swatch.y * 255.f);
+    const int blue = static_cast<int>(swatch.z * 255.f);
+    const ImU32 fill = on ? IM_COL32(red, green, blue, 46)
+                          : (hover ? IM_COL32(244, 244, 242, 255) : IM_COL32(255, 255, 255, 255));
+    const ImU32 border = on ? IM_COL32(red, green, blue, 230) : IM_COL32(214, 213, 208, 255);
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const ImVec2 corner(origin.x + size.x, origin.y + size.y);
+    draw->AddRectFilled(origin, corner, fill, 7.f);
+    draw->AddRect(origin, corner, border, 7.f, ImDrawCornerFlags_All, 1.f);
+    draw->AddCircleFilled(ImVec2(origin.x + padX + dot * 0.5f, origin.y + size.y * 0.5f), dot * 0.5f, IM_COL32(red, green, blue, 255), 16);
+    draw->AddText(ImVec2(origin.x + padX + dot + 7.f, origin.y + padY), IM_COL32(36, 39, 44, 255), label);
+    return pressed;
+}
+
+void drawPanelTag(const Panel& panel, const char* text) {
+    ImFont* font = ImGui::GetFont();
+    const float size = 14.f;
+    const ImVec2 textSize = font->CalcTextSizeA(size, 10000.f, 0.f, text);
+    const ImVec2 pos(panel.x + 14.f, panel.y + 12.f);
+    ImDrawList* draw = ImGui::GetForegroundDrawList();
+    draw->AddRectFilled(ImVec2(pos.x - 8.f, pos.y - 4.f), ImVec2(pos.x + textSize.x + 8.f, pos.y + textSize.y + 4.f),
+                        IM_COL32(255, 255, 255, 228), 5.f);
+    draw->AddText(font, size, pos, IM_COL32(48, 52, 58, 255), text);
 }
 
 void drawInterface() {
     imguiBegin();
+    const float scale = 1.f / uiScale();
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16.f, 12.f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(12.f, 6.f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 7.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.f, 8.f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.f);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.975f, 0.972f, 0.964f, 1.f));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.84f, 0.835f, 0.816f, 1.f));
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(1.f, 1.f, 1.f, 1.f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.955f, 0.953f, 0.945f, 1.f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.91f, 0.905f, 0.89f, 1.f));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.14f, 0.15f, 0.17f, 1.f));
     ImGui::SetNextWindowPos(ImVec2(0.f, 0.f));
     ImGui::SetNextWindowSize(ImVec2(static_cast<float>(gWidth), toolbarHeight()));
-    ImGui::Begin("工具", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
-    if (ImGui::Button("<")) clickButton(1);
+    ImGui::Begin("工具", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                     ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::SetWindowFontScale(scale);
+
+    if (ImGui::Button("<##prev")) clickButton(1);
     ImGui::SameLine();
-    ImGui::TextUnformatted(gModels.empty() ? "没有模型" : gModels[gModel].label.c_str());
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(modelTitle().c_str());
     ImGui::SameLine();
-    if (ImGui::Button(">")) clickButton(2);
+    if (ImGui::Button(">##next")) clickButton(2);
+    ImGui::SameLine(0.f, 20.f);
+    if (darkButton("展开")) clickButton(40);
     ImGui::SameLine();
-    if (ImGui::Button("展开")) clickButton(40);
+    if (toggleButton("四边形网格", gShowQuads)) clickButton(42);
     ImGui::SameLine();
     if (ImGui::Button("清除")) clickButton(41);
+    ImGui::SameLine(0.f, 20.f);
+    if (toggleButton("棋盘格", gTexture == Texture::Checker)) clickButton(50);
     ImGui::SameLine();
-    if (ImGui::Button(gShowExtra ? "收起" : "更多")) clickButton(70);
+    if (toggleButton("共形畸变", gTexture == Texture::Distortion)) clickButton(51);
+    ImGui::SameLine(0.f, 20.f);
+    if (toggleButton(gShowExtra ? "收起" : "更多", gShowExtra)) clickButton(70);
+
     if (gShowExtra) {
-        if (toolButton("棋盘格", gTexture == Texture::Checker)) clickButton(50);
+        if (swatchButton("生成树", gShowTree, ImVec4(0.86f, 0.72f, 0.13f, 1.f))) clickButton(60);
         ImGui::SameLine();
-        if (toolButton("共形畸变", gTexture == Texture::Distortion)) clickButton(51);
+        if (swatchButton("余树", gShowCotree, ImVec4(0.12f, 0.78f, 0.86f, 1.f))) clickButton(61);
         ImGui::SameLine();
-        if (toolButton("生成树", gShowTree)) clickButton(60);
+        if (swatchButton("同调边", gShowHomology, ImVec4(0.35f, 0.86f, 0.38f, 1.f))) clickButton(62);
         ImGui::SameLine();
-        if (toolButton("余树", gShowCotree)) clickButton(61);
-        ImGui::SameLine();
-        if (toolButton("同调边", gShowHomology)) clickButton(62);
-        ImGui::SameLine();
-        if (toolButton("基本环", gShowCycles)) clickButton(63);
+        if (swatchButton("基本环", gShowCycles, ImVec4(0.93f, 0.32f, 0.55f, 1.f))) clickButton(63);
     }
-    ImGui::TextWrapped("%s", gStatus.c_str());
+
+    const float seamReserve = 78.f;
+    const float statusWidth = std::max(40.f, ImGui::GetContentRegionAvail().x - seamReserve);
+    const std::string status = fitText(gStatus, statusWidth);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.40f, 0.42f, 0.45f, 1.f));
+    ImGui::TextUnformatted(status.c_str());
+    ImGui::PopStyleColor();
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const ImVec2 seamPos(ImGui::GetWindowPos().x + ImGui::GetWindowWidth() - seamReserve, ImGui::GetItemRectMin().y);
+    draw->AddCircleFilled(ImVec2(seamPos.x + 4.f, seamPos.y + ImGui::GetFontSize() * 0.5f), 4.f, IM_COL32(242, 64, 115, 255), 16);
+    draw->AddText(ImVec2(seamPos.x + 14.f, seamPos.y), IM_COL32(92, 84, 88, 255), "割缝");
+
+    const ImVec2 bar = ImGui::GetWindowPos();
+    const float barWidth = ImGui::GetWindowWidth();
+    const float barHeight = ImGui::GetWindowHeight();
+    draw->AddLine(ImVec2(bar.x, bar.y + barHeight - 1.f), ImVec2(bar.x + barWidth, bar.y + barHeight - 1.f), IM_COL32(214, 212, 206, 255), 1.f);
     ImGui::End();
-    const Panel left = leftPanel();
-    const Panel right = rightPanel();
-    ImDrawList* overlay = ImGui::GetForegroundDrawList();
-    overlay->PushClipRect(ImVec2(left.x, left.y), ImVec2(left.x + left.w - 8.f, left.y + 28.f), true);
-    overlay->AddText(ImVec2(left.x + 10.f, left.y + 8.f), IM_COL32(30, 34, 40, 255),
-                     "金生成树 · 青余树 · 绿同调边 · 品红基本环 · 粉红割缝");
-    overlay->PopClipRect();
-    overlay->PushClipRect(ImVec2(right.x, right.y), ImVec2(right.x + right.w - 8.f, right.y + 28.f), true);
-    overlay->AddText(ImVec2(right.x + 10.f, right.y + 8.f), IM_COL32(30, 34, 40, 255),
-                     gHasResult ? "UV" : "UV · 点展开");
-    overlay->PopClipRect();
+    ImGui::PopStyleColor(6);
+    ImGui::PopStyleVar(6);
+
+    drawPanelTag(leftPanel(), "网格");
+    drawPanelTag(rightPanel(), gHasResult ? "UV" : "待展开");
     imguiEnd();
 }
 
 void drawFrame() {
     glViewport(0, 0, static_cast<int>(gWidth * gScale), static_cast<int>(gHeight * gScale));
-    glClearColor(0.93f, 0.94f, 0.95f, 1.f);
+    glClearColor(0.90f, 0.90f, 0.888f, 1.f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glEnable(GL_DEPTH_TEST);
     const Panel left = leftPanel();
@@ -631,6 +773,10 @@ void drawFrame() {
     if (gShowHomology) drawMesh(gHomologyLines, mvp, 4, GL_LINES);
     if (gShowCycles) drawMesh(gCycleLines, mvp, 4, GL_LINES);
     drawMesh(gSeamLines, mvp, 4, GL_TRIANGLES);
+    if (gShowQuads) {
+        drawMesh(gQuadFaces, mvp, 2, GL_TRIANGLES);
+        drawMesh(gQuadLines, mvp, 4, GL_TRIANGLES);
+    }
     viewportOf(right);
     glClearColor(0.96f, 0.96f, 0.94f, 1.f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -703,6 +849,7 @@ int main(int argc, char** argv) {
         return gHasResult ? 0 : 1;
     }
     gModels = listModels();
+    keepPositiveGenus(gModels);
     if (!glfwInit()) return 1;
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
@@ -722,7 +869,7 @@ int main(int argc, char** argv) {
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     if (!gModels.empty()) loadModel(0);
-    else gStatus = "没有找到模型。";
+    else gStatus = "没有亏格大于 0 的闭曲面。";
     while (!glfwWindowShouldClose(window)) {
         int framebufferWidth = 0, framebufferHeight = 0;
         glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
@@ -738,6 +885,61 @@ int main(int argc, char** argv) {
         if (gUnfoldNow) {
             gUnfoldNow = false;
             unfold();
+        }
+        if (gQuadNow) {
+            gQuadNow = false;
+            gQuadLines.clear();
+            gQuadFaces.clear();
+            gHasQuads = false;
+            gShowQuads = false;
+            if (gGenus <= 0) {
+                gStatus = "亏格为 0，Abel-Jacobi 没有四边形网格。";
+            } else {
+                AbelJacobiParameterization param(gMesh);
+                std::vector<Eigen::Vector3d> points, triangles, colors;
+                int cells = 0;
+                if (!param.buildQuadLines(points, &triangles, &colors, &cells)) {
+                    gStatus = "Abel-Jacobi 没有抽出四边形网格。";
+                } else {
+                    const Eigen::Vector3d color(0.42, 0.16, 0.05);
+                    const double halfWidth = std::max(gRadius * 0.0016, 0.0012);
+                    for (size_t i = 0; i + 1 < points.size(); i += 2) {
+                        Eigen::Vector3d a = points[i];
+                        Eigen::Vector3d b = points[i + 1];
+                        Eigen::Vector3d along = b - a;
+                        if (along.norm() < 1e-8) continue;
+                        along.normalize();
+                        Eigen::Vector3d side = along.cross(Eigen::Vector3d(0, 1, 0));
+                        if (side.norm() < 0.3) side = along.cross(Eigen::Vector3d(1, 0, 0));
+                        side.normalize();
+                        side *= halfWidth;
+                        const Eigen::Vector3d n = side.cross(along).normalized();
+                        const Eigen::Vector2d uv = Eigen::Vector2d::Zero();
+                        const Eigen::Vector3d a0 = a - side, a1 = a + side, b0 = b - side, b1 = b + side;
+                        pushVertex(gQuadLines, a0, n, uv, color);
+                        pushVertex(gQuadLines, b0, n, uv, color);
+                        pushVertex(gQuadLines, b1, n, uv, color);
+                        pushVertex(gQuadLines, a0, n, uv, color);
+                        pushVertex(gQuadLines, b1, n, uv, color);
+                        pushVertex(gQuadLines, a1, n, uv, color);
+                    }
+                    for (size_t i = 0; i + 2 < triangles.size() && i + 2 < colors.size(); i += 3) {
+                        Eigen::Vector3d normal = (triangles[i + 1] - triangles[i]).cross(triangles[i + 2] - triangles[i]);
+                        if (normal.norm() < 1e-12) continue;
+                        normal.normalize();
+                        for (int corner = 0; corner < 3; ++corner) {
+                            pushVertex(gQuadFaces, triangles[i + static_cast<size_t>(corner)], normal,
+                                       Eigen::Vector2d::Zero(), colors[i + static_cast<size_t>(corner)]);
+                        }
+                    }
+                    gHasQuads = true;
+                    gShowQuads = true;
+                    std::ostringstream text;
+                    text << "四边形网格 · " << cells
+                         << " 格。由 φ1 和它转 90° 的共轭抽出，一格大约 4 条边。割缝两侧周期不是整数，格子会错开。";
+                    gStatus = text.str();
+                }
+            }
         }
     }
     imguiShutdown();

@@ -10,14 +10,15 @@
 #include <utility>
 
 /**
- * Discrete Abel–Jacobi machinery for closed triangle meshes (genus g >= 1).
+ * Discrete Abel–Jacobi map for a closed triangle mesh of genus g >= 1.
  *
- * Pipeline aligned with blog §4.5:
+ * Gu's construction:
  *   1. Tree–cotree homology basis {a_i, b_i}
- *   2. Canonical holomorphic 1-forms {φ_j} with ∫_{a_i} φ_j = δ_ij
- *   3. Period lattice Γ spanned by λ_{a_k}, λ_{b_k} ∈ C^g
- *   4. Abel–Jacobi map μ(p) = (∫_{p0}^p φ_1, …, ∫_{p0}^p φ_g) mod Γ
- *   5. Divisor test μ(D) ≡ 0 (mod Γ) and period integerization for seamless UV
+ *   2. Real harmonic basis {η_k} dual to that basis, ∫_{γ_i} η_j = δ_ij
+ *   3. Hodge star inside the harmonic space, *η_k = Σ λ η
+ *   4. Canonical holomorphic basis φ = ψ A^{-1}, ∫_{a_i} φ_j = δ_ij
+ *   5. Period matrix Π = B, lattice Γ = Z^g + Π Z^g
+ *   6. μ(p) = ∫_{p0}^p φ  mod Γ
  */
 class AbelJacobi {
 public:
@@ -55,11 +56,17 @@ public:
     DivisorCheck checkDivisor(int baseVertex,
                               const std::vector<SingularPoint>& singularities) const;
 
-    /** g×2 matrix: row j = (Re μ(p), Im μ(p)) mod fractional part w.r.t. Γ. */
+    /** g×2 matrix: row j = (Re μ(p), Im μ(p)), reduced into the fundamental domain of Γ. */
     Eigen::MatrixXd abelJacobiMap(int baseVertex, int targetVertex) const;
 
-    /** Period lattice generators: 2g columns, each a g×2 complex vector flattened as g rows × 2 cols per block. */
+    /** Period lattice generators. Columns (2k, 2k+1) are λ_{a_k}; columns (2g+2k, 2g+2k+1) are λ_{b_k}. */
     const Eigen::MatrixXd& latticeGenerators() const { return latticeGens_; }
+
+    /** Riemann matrix Π after a-periods are normalized to δ_ij. Entry (i, j) is ∫_{b_i} φ_j. */
+    const Eigen::MatrixXcd& periodMatrix() const { return period_; }
+
+    /** Max |∫_{a_i} φ_j − δ_ij| after canonicalization. */
+    double canonicalError() const { return canonicalError_; }
 
     /** Integrate Σ_j (cRe_j + i cIm_j) φ_j along BFS tree from baseVertex. */
     bool integrateHolomorphic(int baseVertex,
@@ -67,11 +74,14 @@ public:
                               const Eigen::VectorXd& coeffIm,
                               std::vector<Eigen::Vector2d>& uv) const;
 
-    /**
-     * Heuristic period quantization (small genus): find near-integer periods on
-     * homology basis, then integrate to UV.
-     */
+    /** Integrate the first canonical form φ_1 and write (Re, Im) into mesh UVs. */
     bool quantizeAndParameterize(int baseVertex = 0);
+
+    /** Edges of the a- and b-cycles, as vertex pairs on the original mesh. */
+    std::vector<std::pair<int, int>> homologySeams() const;
+
+    /** (Re, Im) of φ_which along the oriented edge from → to. */
+    Eigen::Vector2d canonicalEdge(int from, int to, int which = 0) const;
 
 private:
     struct EdgeInfo {
@@ -93,13 +103,18 @@ private:
     double cotan(const Eigen::Vector3d& a, const Eigen::Vector3d& b, const Eigen::Vector3d& c) const;
     double cotanWeightAtVertex(int vi, int edgeIdx) const;
     void collectHomologyBasis();
-    bool solveHarmonicWithPeriods(const std::vector<double>& aPeriodRhs, Eigen::VectorXd& omega) const;
-    void computeHodgeConjugate(const Eigen::VectorXd& omega, Eigen::VectorXd& starOmega) const;
+    bool solveHarmonic(const std::vector<double>& periodRhs, Eigen::VectorXd& omega) const;
+    double periodOf(const Eigen::VectorXd& omega, const topology::TreeCotreeBasis::Cycle& cycle) const;
+    double triangleArea(int face) const;
+    void faceEdgeValues(int face, const Eigen::VectorXd& omega, Eigen::Vector3d& values) const;
+    double faceWedge(const Eigen::Vector3d& left, const Eigen::Vector3d& right) const;
+    double faceInner(int face, const Eigen::Vector3d& left, const Eigen::Vector3d& right) const;
     Eigen::Vector2d periodOnCycle(const HoloForm& form,
                                   const topology::TreeCotreeBasis::Cycle& cycle) const;
     void buildLattice();
     Eigen::Vector2d integrateEdge(int from, int to, const HoloForm& form) const;
     Eigen::MatrixXd mapAlongPath(int baseVertex, int targetVertex) const;
+    Eigen::MatrixXd reduceModLattice(const Eigen::MatrixXd& mu, Eigen::VectorXi& coeffs, double& residual) const;
     bool nearestLatticePoint(const Eigen::MatrixXd& mu, Eigen::VectorXi& coeffs, double& residual) const;
 
     Mesh& mesh_;
@@ -121,6 +136,8 @@ private:
     std::vector<HoloForm> canonicalBasis_;
     /** 2g generators, each stored as g×2 (Re, Im per component). */
     Eigen::MatrixXd latticeGens_;
+    Eigen::MatrixXcd period_;
+    double canonicalError_ = 0.0;
 };
 
 #endif

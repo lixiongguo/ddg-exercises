@@ -1,6 +1,8 @@
 #include "AbelJacobi.h"
+#include <Eigen/Sparse>
 #include <algorithm>
 #include <cmath>
+#include <complex>
 #include <iostream>
 #include <limits>
 #include <map>
@@ -150,7 +152,8 @@ double AbelJacobi::cotanWeightAtVertex(int vi, int edgeIdx) const
             }
         }
         if (opp >= 0 && opp < nV_) {
-            w += cotan(V_.row(opp), V_.row(vi), V_.row(vj));
+            // Angle opposite the edge, the cotangent weight in the discrete co-closed equation.
+            w += cotan(V_.row(vi), V_.row(opp), V_.row(vj));
         }
     };
 
@@ -191,8 +194,8 @@ void AbelJacobi::collectHomologyBasis()
     }
 }
 
-bool AbelJacobi::solveHarmonicWithPeriods(
-    const std::vector<double>& aPeriodRhs,
+bool AbelJacobi::solveHarmonic(
+    const std::vector<double>& periodRhs,
     Eigen::VectorXd& omega) const
 {
     std::vector<Triplet<double>> trips;
@@ -225,12 +228,20 @@ bool AbelJacobi::solveHarmonicWithPeriods(
         ++row;
     }
 
-    for (int i = 0; i < static_cast<int>(aCycles_.size()) && i < static_cast<int>(aPeriodRhs.size()); ++i) {
-        for (const auto& term : aCycles_[static_cast<size_t>(i)]) {
+    const int nCycles = static_cast<int>(aCycles_.size() + bCycles_.size());
+    const int nPeriods = std::min(nCycles, static_cast<int>(periodRhs.size()));
+    for (int i = 0; i < nPeriods; ++i) {
+        const auto& cycle = i < static_cast<int>(aCycles_.size())
+                                ? aCycles_[static_cast<size_t>(i)]
+                                : bCycles_[static_cast<size_t>(i - static_cast<int>(aCycles_.size()))];
+        bool wrote = false;
+        for (const auto& term : cycle) {
             if (term.first < 0 || term.first >= nE_) continue;
             trips.emplace_back(row, term.first, static_cast<double>(term.second));
+            wrote = true;
         }
-        rhs.push_back(aPeriodRhs[static_cast<size_t>(i)]);
+        if (!wrote) return false;
+        rhs.push_back(periodRhs[static_cast<size_t>(i)]);
         ++row;
     }
 
@@ -261,93 +272,63 @@ bool AbelJacobi::solveHarmonicWithPeriods(
     return solver.info() == Success && omega.size() == nE_ && isFiniteVector(omega);
 }
 
-void AbelJacobi::computeHodgeConjugate(
-    const Eigen::VectorXd& omega,
-    Eigen::VectorXd& starOmega) const
+double AbelJacobi::periodOf(const VectorXd& omega, const topology::TreeCotreeBasis::Cycle& cycle) const
 {
-    starOmega = VectorXd::Zero(nE_);
-    std::vector<double> weightSum(nE_, 0.0);
-
-    for (int fi = 0; fi < nF_; ++fi) {
-        const int a = F_[fi * 3];
-        const int b = F_[fi * 3 + 1];
-        const int c = F_[fi * 3 + 2];
-        if (a < 0 || a >= nV_ || b < 0 || b >= nV_ || c < 0 || c >= nV_) continue;
-
-        const Vector3d p0 = V_.row(a);
-        const Vector3d p1 = V_.row(b);
-        const Vector3d p2 = V_.row(c);
-
-        const Vector3d e01 = p1 - p0;
-        const Vector3d e12 = p2 - p1;
-        const Vector3d e20 = p0 - p2;
-        const double l0 = e01.norm();
-        const double l1 = e12.norm();
-        const double l2 = e20.norm();
-        const double area = 0.5 * e01.cross(p2 - p0).norm();
-        if (area < 1e-14 || l0 < 1e-14 || l1 < 1e-14 || l2 < 1e-14) continue;
-
-        Vector3d wVals = Vector3d::Zero();
-        const int eab = findEdge(a, b);
-        const int ebc = findEdge(b, c);
-        const int eca = findEdge(c, a);
-        if (eab >= 0) wVals(0) = edgeSign(a, b) * omega(eab);
-        if (ebc >= 0) wVals(1) = edgeSign(b, c) * omega(ebc);
-        if (eca >= 0) wVals(2) = edgeSign(c, a) * omega(eca);
-
-        const Vector3d n = e01.cross(p2 - p0);
-        const double nLen = n.norm();
-        if (nLen < 1e-14) continue;
-        const Vector3d nHat = n / nLen;
-        Vector3d t1 = e01 / l0;
-        Vector3d t2 = nHat.cross(t1);
-        const double t2Len = t2.norm();
-        if (t2Len < 1e-14) continue;
-        t2 /= t2Len;
-
-        const Vector2d q1(l0, 0.0);
-        const Vector2d q2(e12.dot(t1), e12.dot(t2));
-
-        Matrix2d matA;
-        matA.col(0) = q1 / l0;
-        matA.col(1) = q2 / l1;
-
-        const Vector2d bVec(wVals(0) / l0, wVals(1) / l1);
-        const Vector2d grad = matA.colPivHouseholderQr().solve(bVec);
-        const Vector2d starGrad(-grad.y(), grad.x());
-
-        struct LocalEdge {
-            int idx;
-            int from;
-            int to;
-            Vector3d tangent;
-            double len;
-        };
-        const LocalEdge local[3] = {
-            {eab, a, b, e01, l0},
-            {ebc, b, c, e12, l1},
-            {eca, c, a, e20, l2},
-        };
-
-        for (int k = 0; k < 3; ++k) {
-            if (local[k].idx < 0 || local[k].idx >= nE_) continue;
-            const double tLen = local[k].tangent.norm();
-            if (tLen < 1e-14) continue;
-            const Vector2d t2d(local[k].tangent.dot(t1), local[k].tangent.dot(t2));
-            const double t2dLen = t2d.norm();
-            if (t2dLen < 1e-14) continue;
-            const double starVal = starGrad.dot(t2d / t2dLen) * local[k].len;
-            const int s = edgeSign(local[k].from, local[k].to);
-            starOmega(local[k].idx) += s * starVal;
-            weightSum[local[k].idx] += 1.0;
-        }
+    double sum = 0.0;
+    for (const auto& term : cycle) {
+        if (term.first < 0 || term.first >= omega.size()) continue;
+        sum += static_cast<double>(term.second) * omega(term.first);
     }
+    return sum;
+}
 
-    for (int ei = 0; ei < nE_; ++ei) {
-        if (weightSum[ei] > 0.0) {
-            starOmega(ei) /= weightSum[ei];
-        }
-    }
+double AbelJacobi::triangleArea(int face) const
+{
+    if (face < 0 || face >= nF_) return 0.0;
+    const Vector3d p0 = V_.row(F_[face * 3]);
+    const Vector3d p1 = V_.row(F_[face * 3 + 1]);
+    const Vector3d p2 = V_.row(F_[face * 3 + 2]);
+    return 0.5 * (p1 - p0).cross(p2 - p0).norm();
+}
+
+void AbelJacobi::faceEdgeValues(int face, const VectorXd& omega, Vector3d& values) const
+{
+    values = Vector3d::Zero();
+    if (face < 0 || face >= nF_) return;
+    const int a = F_[face * 3];
+    const int b = F_[face * 3 + 1];
+    const int c = F_[face * 3 + 2];
+    const int eab = findEdge(a, b);
+    const int ebc = findEdge(b, c);
+    const int eca = findEdge(c, a);
+    if (eab >= 0 && eab < omega.size()) values(0) = edgeSign(a, b) * omega(eab);
+    if (ebc >= 0 && ebc < omega.size()) values(1) = edgeSign(b, c) * omega(ebc);
+    if (eca >= 0 && eca < omega.size()) values(2) = edgeSign(c, a) * omega(eca);
+}
+
+double AbelJacobi::faceWedge(const Vector3d& left, const Vector3d& right) const
+{
+    return (left(0) * (right(1) - right(2)) + left(1) * (right(2) - right(0)) + left(2) * (right(0) - right(1))) / 6.0;
+}
+
+double AbelJacobi::faceInner(int face, const Vector3d& left, const Vector3d& right) const
+{
+    if (face < 0 || face >= nF_) return 0.0;
+    const int a = F_[face * 3];
+    const int b = F_[face * 3 + 1];
+    const int c = F_[face * 3 + 2];
+    if (a < 0 || a >= nV_ || b < 0 || b >= nV_ || c < 0 || c >= nV_) return 0.0;
+    const double area = triangleArea(face);
+    if (area < 1e-14) return 0.0;
+    const double l0 = (V_.row(b) - V_.row(a)).squaredNorm();
+    const double l1 = (V_.row(c) - V_.row(b)).squaredNorm();
+    const double l2 = (V_.row(a) - V_.row(c)).squaredNorm();
+    Matrix3d metric;
+    metric << -4.0 * l0, l0 + l1 - l2, l0 + l2 - l1,
+              l1 + l0 - l2, -4.0 * l1, l1 + l2 - l0,
+              l2 + l0 - l1, l2 + l1 - l0, -4.0 * l2;
+    metric /= 24.0 * area;
+    return left.transpose() * metric * right;
 }
 
 Eigen::Vector2d AbelJacobi::periodOnCycle(
@@ -376,7 +357,7 @@ void AbelJacobi::buildLattice()
         return;
     }
 
-    // Column k = λ_{a_k}, column g+k = λ_{b_k} (each a g-vector in C^g).
+    period_.resize(g, g);
     for (int k = 0; k < g; ++k) {
         for (int j = 0; j < g; ++j) {
             const Vector2d pa = periodOnCycle(canonicalBasis_[static_cast<size_t>(j)], aCycles_[static_cast<size_t>(k)]);
@@ -385,6 +366,7 @@ void AbelJacobi::buildLattice()
             latticeGens_(j, 2 * k + 1) = pa.y();
             latticeGens_(j, 2 * g + 2 * k) = pb.x();
             latticeGens_(j, 2 * g + 2 * k + 1) = pb.y();
+            period_(k, j) = std::complex<double>(pb.x(), pb.y());
         }
     }
 }
@@ -392,6 +374,8 @@ void AbelJacobi::buildLattice()
 bool AbelJacobi::build()
 {
     ready_ = false;
+    canonicalError_ = 0.0;
+    period_.resize(0, 0);
     extractMesh();
 
     if (nV_ < 3 || nF_ < 1 || nE_ < 1 || genus_ <= 0 || nB_ != 0) {
@@ -406,21 +390,120 @@ bool AbelJacobi::build()
         return false;
     }
 
-    canonicalBasis_.clear();
-    canonicalBasis_.resize(static_cast<size_t>(genus_));
-
-    for (int j = 0; j < genus_; ++j) {
-        std::vector<double> rhs(static_cast<size_t>(genus_), 0.0);
+    const int g = genus_;
+    const int nH = 2 * g;
+    std::vector<VectorXd> harmonic(static_cast<size_t>(nH));
+    for (int j = 0; j < nH; ++j) {
+        std::vector<double> rhs(static_cast<size_t>(nH), 0.0);
         rhs[static_cast<size_t>(j)] = 1.0;
-
-        HoloForm form;
-        if (!solveHarmonicWithPeriods(rhs, form.omega)) {
-            std::cerr << "[AbelJacobi] Failed to solve canonical form " << j << ".\n";
+        if (!solveHarmonic(rhs, harmonic[static_cast<size_t>(j)])) {
+            std::cerr << "[AbelJacobi] Failed to solve harmonic form " << j << ".\n";
             return false;
         }
-        computeHodgeConjugate(form.omega, form.starOmega);
-        if (!isFiniteVector(form.starOmega)) return false;
+    }
+
+    double periodError = 0.0;
+    for (int j = 0; j < nH; ++j) {
+        for (int i = 0; i < nH; ++i) {
+            const auto& cycle = i < g ? aCycles_[static_cast<size_t>(i)]
+                                      : bCycles_[static_cast<size_t>(i - g)];
+            const double expected = (i == j) ? 1.0 : 0.0;
+            periodError = std::max(periodError, std::abs(periodOf(harmonic[static_cast<size_t>(j)], cycle) - expected));
+        }
+    }
+    if (periodError > 5e-2) {
+        std::cerr << "[AbelJacobi] Harmonic periods missed the dual basis by " << periodError << ".\n";
+        return false;
+    }
+
+    MatrixXd wedge = MatrixXd::Zero(nH, nH);
+    std::vector<std::vector<Vector3d>> faceValues(static_cast<size_t>(nF_));
+    for (int face = 0; face < nF_; ++face) {
+        faceValues[static_cast<size_t>(face)].resize(static_cast<size_t>(nH));
+        for (int j = 0; j < nH; ++j) {
+            faceEdgeValues(face, harmonic[static_cast<size_t>(j)], faceValues[static_cast<size_t>(face)][static_cast<size_t>(j)]);
+        }
+        for (int i = 0; i < nH; ++i) {
+            for (int j = 0; j < nH; ++j) {
+                wedge(i, j) += faceWedge(faceValues[static_cast<size_t>(face)][static_cast<size_t>(i)],
+                                         faceValues[static_cast<size_t>(face)][static_cast<size_t>(j)]);
+            }
+        }
+    }
+
+    FullPivLU<MatrixXd> wedgeFactor(wedge);
+    if (!wedgeFactor.isInvertible()) {
+        std::cerr << "[AbelJacobi] Harmonic wedge product is singular.\n";
+        return false;
+    }
+
+    std::vector<VectorXd> star(static_cast<size_t>(nH));
+    for (int which = 0; which < nH; ++which) {
+        VectorXd inner = VectorXd::Zero(nH);
+        for (int face = 0; face < nF_; ++face) {
+            for (int i = 0; i < nH; ++i) {
+                inner(i) += faceInner(face,
+                                      faceValues[static_cast<size_t>(face)][static_cast<size_t>(i)],
+                                      faceValues[static_cast<size_t>(face)][static_cast<size_t>(which)]);
+            }
+        }
+        const VectorXd lambda = wedgeFactor.solve(inner);
+        if (!isFiniteVector(lambda)) return false;
+        star[static_cast<size_t>(which)] = VectorXd::Zero(nE_);
+        for (int k = 0; k < nH; ++k) {
+            star[static_cast<size_t>(which)] += lambda(k) * harmonic[static_cast<size_t>(k)];
+        }
+    }
+
+    MatrixXcd aPeriods(g, g);
+    for (int i = 0; i < g; ++i) {
+        for (int k = 0; k < g; ++k) {
+            const double re = periodOf(harmonic[static_cast<size_t>(k)], aCycles_[static_cast<size_t>(i)]);
+            const double im = periodOf(star[static_cast<size_t>(k)], aCycles_[static_cast<size_t>(i)]);
+            aPeriods(i, k) = std::complex<double>(re, im);
+        }
+    }
+    FullPivLU<MatrixXcd> aFactor(aPeriods);
+    if (!aFactor.isInvertible()) {
+        std::cerr << "[AbelJacobi] Complex a-period matrix is singular.\n";
+        return false;
+    }
+    const MatrixXcd aInverse = aFactor.inverse();
+
+    canonicalBasis_.assign(static_cast<size_t>(g), HoloForm{});
+    for (int j = 0; j < g; ++j) {
+        HoloForm form;
+        form.omega = VectorXd::Zero(nE_);
+        form.starOmega = VectorXd::Zero(nE_);
+        for (int k = 0; k < g; ++k) {
+            const std::complex<double> coeff = aInverse(k, j);
+            const double real = coeff.real();
+            const double imag = coeff.imag();
+            form.omega += real * harmonic[static_cast<size_t>(k)] - imag * star[static_cast<size_t>(k)];
+            form.starOmega += real * star[static_cast<size_t>(k)] + imag * harmonic[static_cast<size_t>(k)];
+        }
+        if (!isFiniteVector(form.omega) || !isFiniteVector(form.starOmega)) return false;
         canonicalBasis_[static_cast<size_t>(j)] = std::move(form);
+    }
+
+    for (int i = 0; i < g; ++i) {
+        const Vector2d diagonal = periodOnCycle(canonicalBasis_[static_cast<size_t>(i)], bCycles_[static_cast<size_t>(i)]);
+        if (diagonal.y() < 0.0) {
+            for (auto& term : bCycles_[static_cast<size_t>(i)]) term.second = -term.second;
+        }
+    }
+
+    canonicalError_ = 0.0;
+    for (int i = 0; i < g; ++i) {
+        for (int j = 0; j < g; ++j) {
+            const Vector2d pa = periodOnCycle(canonicalBasis_[static_cast<size_t>(j)], aCycles_[static_cast<size_t>(i)]);
+            const double expect = (i == j) ? 1.0 : 0.0;
+            canonicalError_ = std::max(canonicalError_, std::hypot(pa.x() - expect, pa.y()));
+        }
+    }
+    if (canonicalError_ > 5e-2) {
+        std::cerr << "[AbelJacobi] Canonical a-periods off by " << canonicalError_ << ".\n";
+        return false;
     }
 
     buildLattice();
@@ -502,9 +585,55 @@ Eigen::Vector2d AbelJacobi::integrateEdge(int from, int to, const HoloForm& form
     return Vector2d(s * form.omega(ei), s * form.starOmega(ei));
 }
 
+Eigen::MatrixXd AbelJacobi::reduceModLattice(
+    const Eigen::MatrixXd& mu,
+    Eigen::VectorXi& coeffs,
+    double& residual) const
+{
+    const int g = genus_;
+    const int nGen = 2 * g;
+    MatrixXd reduced = mu;
+    residual = std::numeric_limits<double>::infinity();
+    coeffs.resize(0);
+    if (mu.rows() != g || mu.cols() != 2 || latticeGens_.rows() != g || latticeGens_.cols() != 4 * g) {
+        return reduced;
+    }
+
+    MatrixXd generators = MatrixXd::Zero(2 * g, 2 * g);
+    VectorXd sample(2 * g);
+    for (int j = 0; j < g; ++j) {
+        sample(2 * j) = mu(j, 0);
+        sample(2 * j + 1) = mu(j, 1);
+    }
+    for (int k = 0; k < nGen; ++k) {
+        const int colRe = (k < g) ? (2 * k) : (2 * g + 2 * (k - g));
+        for (int j = 0; j < g; ++j) {
+            generators(2 * j, k) = latticeGens_(j, colRe);
+            generators(2 * j + 1, k) = latticeGens_(j, colRe + 1);
+        }
+    }
+
+    const VectorXd coordinates = generators.colPivHouseholderQr().solve(sample);
+    coeffs.resize(nGen);
+    VectorXd rounded(nGen);
+    for (int k = 0; k < nGen; ++k) {
+        coeffs(k) = static_cast<int>(std::llround(coordinates(k)));
+        rounded(k) = static_cast<double>(coeffs(k));
+    }
+    const VectorXd correction = generators * rounded;
+    residual = (correction - sample).norm();
+    for (int j = 0; j < g; ++j) {
+        reduced(j, 0) = mu(j, 0) - correction(2 * j);
+        reduced(j, 1) = mu(j, 1) - correction(2 * j + 1);
+    }
+    return reduced;
+}
+
 Eigen::MatrixXd AbelJacobi::abelJacobiMap(int baseVertex, int targetVertex) const
 {
-    return mapAlongPath(baseVertex, targetVertex);
+    Eigen::VectorXi coeffs;
+    double residual = 0.0;
+    return reduceModLattice(mapAlongPath(baseVertex, targetVertex), coeffs, residual);
 }
 
 bool AbelJacobi::nearestLatticePoint(
@@ -512,37 +641,8 @@ bool AbelJacobi::nearestLatticePoint(
     Eigen::VectorXi& coeffs,
     double& residual) const
 {
-    const int g = genus_;
-    const int nGen = 2 * g;
-    if (mu.rows() != g || mu.cols() != 2 || latticeGens_.rows() != g) {
-        residual = std::numeric_limits<double>::infinity();
-        return false;
-    }
-
-    MatrixXd A = MatrixXd::Zero(2 * g, 2 * g);
-    VectorXd b(2 * g);
-    for (int j = 0; j < g; ++j) {
-        b(2 * j) = mu(j, 0);
-        b(2 * j + 1) = mu(j, 1);
-    }
-    for (int k = 0; k < nGen; ++k) {
-        const int colRe = (k < g) ? (2 * k) : (2 * g + 2 * (k - g));
-        const int colIm = colRe + 1;
-        for (int j = 0; j < g; ++j) {
-            A(2 * j, k) = latticeGens_(j, colRe);
-            A(2 * j + 1, k) = latticeGens_(j, colIm);
-        }
-    }
-
-    const VectorXd z = A.colPivHouseholderQr().solve(b);
-    coeffs.resize(nGen);
-    VectorXd zRound(nGen);
-    for (int k = 0; k < nGen; ++k) {
-        coeffs(k) = static_cast<int>(std::llround(z(k)));
-        zRound(k) = static_cast<double>(coeffs(k));
-    }
-    residual = (A * zRound - b).norm();
-    return residual < kLatticeTol;
+    reduceModLattice(mu, coeffs, residual);
+    return std::isfinite(residual) && residual < kLatticeTol;
 }
 
 AbelJacobi::DivisorCheck AbelJacobi::checkDivisor(
@@ -613,31 +713,12 @@ bool AbelJacobi::integrateHolomorphic(
 
 bool AbelJacobi::quantizeAndParameterize(int baseVertex)
 {
-    if (!ready_) return false;
+    if (!ready_ || genus_ < 1) return false;
+    if (baseVertex < 0 || baseVertex >= nV_) baseVertex = 0;
 
-    VectorXd cRe = VectorXd::Ones(genus_);
+    VectorXd cRe = VectorXd::Zero(genus_);
     VectorXd cIm = VectorXd::Zero(genus_);
-
-    if (genus_ == 1 && !bCycles_.empty()) {
-        const Vector2d pb = periodOnCycle(canonicalBasis_[0], bCycles_[0]);
-        const double target = std::max(std::abs(pb.x()), std::abs(pb.y()));
-        if (target > 1e-12) {
-            const double scale = std::round(target) / target;
-            cRe(0) = scale;
-        }
-    } else {
-        for (int j = 0; j < genus_; ++j) {
-            for (int k = 0; k < genus_ && k < static_cast<int>(bCycles_.size()); ++k) {
-                const Vector2d pb = periodOnCycle(canonicalBasis_[static_cast<size_t>(j)], bCycles_[static_cast<size_t>(k)]);
-                if (std::abs(pb.x()) > 1e-12) {
-                    cRe(j) = std::round(pb.x()) / pb.x();
-                }
-                if (std::abs(pb.y()) > 1e-12) {
-                    cIm(j) = std::round(pb.y()) / pb.y();
-                }
-            }
-        }
-    }
+    cRe(0) = 1.0;
 
     std::vector<Vector2d> uv;
     if (!integrateHolomorphic(baseVertex, cRe, cIm, uv)) return false;
@@ -649,4 +730,27 @@ bool AbelJacobi::quantizeAndParameterize(int baseVertex)
         }
     }
     return true;
+}
+
+std::vector<std::pair<int, int>> AbelJacobi::homologySeams() const
+{
+    std::vector<std::pair<int, int>> seams;
+    auto append = [&](const std::vector<topology::TreeCotreeBasis::Cycle>& cycles) {
+        for (const auto& cycle : cycles) {
+            for (const auto& term : cycle) {
+                if (term.first < 0 || term.first >= nE_) continue;
+                seams.emplace_back(edges_[static_cast<size_t>(term.first)].v0,
+                                   edges_[static_cast<size_t>(term.first)].v1);
+            }
+        }
+    };
+    append(aCycles_);
+    append(bCycles_);
+    return seams;
+}
+
+Eigen::Vector2d AbelJacobi::canonicalEdge(int from, int to, int which) const
+{
+    if (!ready_ || which < 0 || which >= static_cast<int>(canonicalBasis_.size())) return Vector2d::Zero();
+    return integrateEdge(from, to, canonicalBasis_[static_cast<size_t>(which)]);
 }
